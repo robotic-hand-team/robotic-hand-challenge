@@ -7,6 +7,7 @@ import numpy as np
 import trimesh
 
 from . import config as C
+from .left_hand import mirror_spec
 
 SCENE_XML = C.SIM_DIR / "Inspire_hand" / "xml" / "scene.xml"
 
@@ -25,7 +26,7 @@ PARK_POS = {"vegabar_29": [0.5, -0.3, 0.15], "vegabar_38": [0.5, 0.3, 0.15]}
 
 
 def _hand_bodies(spec):
-    return [b for b in spec.bodies if b.name.startswith("right_")]
+    return [b for b in spec.bodies if b.name.startswith(f"{C.HAND_SIDE}_")]
 
 
 def _configure_hand(spec):
@@ -40,7 +41,7 @@ def _configure_hand(spec):
                 if C.CONTACT_SOLIMP is not None:
                     geom.solimp = list(C.CONTACT_SOLIMP)
     for joint in spec.joints:
-        if joint.name.startswith("right_"):
+        if joint.name.startswith(f"{C.HAND_SIDE}_"):
             joint.actfrclimited = False
             joint.armature = JOINT_ARMATURE
             joint.damping = [JOINT_DAMPING, 0.0, 0.0]
@@ -199,6 +200,8 @@ def _configure_floor(spec):
 
 def build_model() -> mujoco.MjModel:
     spec = mujoco.MjSpec.from_file(str(SCENE_XML))
+    if C.HAND_SIDE == "left":
+        mirror_spec(spec, SCENE_XML.parent)
     spec.option.timestep = C.TIMESTEP
     spec.option.iterations = C.SOLVER_ITERATIONS
     spec.option.ls_iterations = C.LS_ITERATIONS
