@@ -181,12 +181,13 @@ def load_models():
 
 
 def predict_position(df, model, scaler, feat_cols):
-    """Returns (N, 3) array: predicted [x, y, z] in mm."""
+    """Returns (N, 3) XYZ mm and (N, 6) sin/cos orientation columns."""
     for c in feat_cols:
         if c not in df.columns:
             df[c] = 0.0
-    X = scaler.transform(df[feat_cols].fillna(0).values)
-    return model.predict(X)[:, :3]
+    X    = scaler.transform(df[feat_cols].fillna(0).values)
+    pred = model.predict(X)          # (N, 9): xyz + sin_roll,cos_roll,sin_pitch,cos_pitch,sin_yaw,cos_yaw
+    return pred[:, :3], pred[:, 3:]  # (N,3), (N,6)
 
 
 def predict_tilt(df, model, scaler, feat_cols):
@@ -292,37 +293,37 @@ def setup_3d(ax):
 # Main visualisation
 # ══════════════════════════════════════════════════════════════════════════════
 
-def run(session_path: Path, save_png: Path | None = None, animate: bool = True):
-    print(f"\nSession : {session_path.name}")
-
-    # ── Load data ──────────────────────────────────────────────────────────────
-    hold, gt_available = load_session(session_path)
-    print(f"Frames  : {len(hold)}  |  ground truth: {'yes' if gt_available else 'no'}")
-
-    # ── Load models ────────────────────────────────────────────────────────────
-    print("Loading models...")
-    (pos_model,  pos_scaler,  pos_cols,
-     tilt_model, tilt_scaler, tilt_cols,
-     slip_model, slip_scaler, slip_cols) = load_models()
-
-    # ── Inference ──────────────────────────────────────────────────────────────
-    pred_xyz  = predict_position(hold, pos_model, pos_scaler, pos_cols)   # (N, 3)
-    tilt_lbl, tilt_proba = predict_tilt(hold, tilt_model, tilt_scaler, tilt_cols)
-    slip_prob = predict_slip(hold, slip_model, slip_scaler, slip_cols)    # (N,)
+def run(session_path: Path, save_png: Path | None = None, animate: bool = True,
+        _preloaded: dict | None = None):
+    """
+    Full 8-panel result view.
+    Pass _preloaded dict to skip re-loading data & models (used by __main__).
+    """
+    if _preloaded:
+        hold        = _preloaded["hold"]
+        gt_available = _preloaded["gt_available"]
+        pred_xyz    = _preloaded["pred_xyz"]
+        pred_ori    = _preloaded["pred_ori"]  # noqa: F841 (unused in 8-panel view)
+        tilt_lbl    = _preloaded["tilt_lbl"]
+        tilt_proba  = _preloaded["tilt_proba"]
+        slip_prob   = _preloaded["slip_prob"]
+    else:
+        hold, gt_available = load_session(session_path)
+        (pos_model,  pos_scaler,  pos_cols,
+         tilt_model, tilt_scaler, tilt_cols,
+         slip_model, slip_scaler, slip_cols) = load_models()
+        pred_xyz, pred_ori   = predict_position(hold, pos_model, pos_scaler, pos_cols)
+        tilt_lbl, tilt_proba = predict_tilt(hold, tilt_model, tilt_scaler, tilt_cols)
+        slip_prob            = predict_slip(hold, slip_model, slip_scaler, slip_cols)
 
     tilt_str  = "TILTED" if tilt_lbl else "upright"
     tilt_conf = tilt_proba[tilt_lbl] * 100
     slip_pct  = (slip_prob > 0.5).mean() * 100
-
-    mean_pos = pred_xyz.mean(axis=0)
-    print(f"Position: X={mean_pos[0]:+.1f}  Y={mean_pos[1]:+.1f}  Z={mean_pos[2]:+.1f}  mm (mean)")
-    print(f"Tilt    : {tilt_str}  ({tilt_conf:.0f}% conf)")
-    print(f"Slip    : {slip_pct:.0f}% of frames flagged as slipping")
+    mean_pos  = pred_xyz.mean(axis=0)
 
     if gt_available:
         gt_xyz = hold[["pos_x", "pos_y", "pos_z"]].values * 1000.0
         errs   = np.linalg.norm(pred_xyz - gt_xyz, axis=1)
-        print(f"GT error: mean={errs.mean():.1f} mm  median={np.median(errs):.1f} mm")
 
     # Hand skeleton at mean joint angles
     mean_act = hold[[f"angle_act_{d}" for d in DOF_NAMES]].mean()
@@ -496,6 +497,119 @@ def run(session_path: Path, save_png: Path | None = None, animate: bool = True):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Compare view: simple top-down hand + prediction vs ground truth
+# ══════════════════════════════════════════════════════════════════════════════
+
+def save_compare(session_path: Path, out_png: Path,
+                 pred_xyz_mean: np.ndarray, pred_ori_mean: np.ndarray,
+                 tilt_lbl: int, tilt_conf: float,
+                 hold: pd.DataFrame, gt_available: bool,
+                 body_pos: dict):
+    """
+    Front-view (Y=lateral, Z=height): hand skeleton in background,
+    prediction + GT arrows in foreground.
+
+    Red arrow  = predicted object centre + tilt direction
+    Green arrow = GT position + actual tilt direction (sim only)
+    """
+    import json
+    import matplotlib.patches as mpatches
+
+    # Projection: Y (lateral) on x-axis, Z (height) on y-axis  →  front view
+    XI, YI = 1, 2   # body_pos indices
+
+    fig, ax = plt.subplots(figsize=(6, 7))
+    fig.patch.set_facecolor(BG)
+    _style_ax(ax)
+
+    # ── Real hand skeleton, front view (Y × Z) ────────────────────────────────
+    palm_bodies = [CHAINS[i][1] for i in range(4)] + ["right_hand_root"]
+    palm_pts    = [body_pos[b] for b in palm_bodies]
+    ax.fill([p[XI] for p in palm_pts] + [palm_pts[0][XI]],
+            [p[YI] for p in palm_pts] + [palm_pts[0][YI]],
+            color="#2E3D45", alpha=0.8, zorder=1)
+
+    for chain in CHAINS:
+        color = THUMB_C if "thumb" in chain[-1] else FINGER_C
+        ax.plot([body_pos[n][XI] for n in chain],
+                [body_pos[n][YI] for n in chain],
+                "-o", color=color, lw=3, ms=6, alpha=0.55, zorder=2)
+
+    ax.plot([p[XI] for p in palm_pts] + [palm_pts[0][XI]],
+            [p[YI] for p in palm_pts] + [palm_pts[0][YI]],
+            color=PALM_C, lw=2, alpha=0.55, zorder=3)
+
+    # Object positions in Y, Z
+    py_pred, pz_pred = pred_xyz_mean[1], pred_xyz_mean[2]
+
+    # ── Predicted tilt arrow ──────────────────────────────────────────────────
+    # sin/cos: [sin_roll, cos_roll, sin_pitch, cos_pitch, sin_yaw, cos_yaw]
+    pred_pitch = np.rad2deg(np.arctan2(pred_ori_mean[2], pred_ori_mean[3]))
+    pred_roll  = np.rad2deg(np.arctan2(pred_ori_mean[0], pred_ori_mean[1]))
+    pred_mag   = np.sqrt(pred_pitch**2 + pred_roll**2)
+    if pred_mag > 1.0:
+        # pitch → tilt in YZ plane (dy), roll → tilt visible in Z
+        d_py = pred_pitch / pred_mag * 22
+        d_pz = pred_roll  / pred_mag * 22
+        ax.annotate("", xy=(py_pred + d_py, pz_pred + d_pz),
+                        xytext=(py_pred - d_py, pz_pred - d_pz),
+                    arrowprops=dict(arrowstyle="->", color=PRED_C, lw=2.5), zorder=8)
+
+    ax.scatter(py_pred, pz_pred, s=280, c=PRED_C, marker="o",
+               zorder=9, edgecolors="white", linewidths=2)
+    tilt_str  = "TILTED" if tilt_lbl else "upright"
+    tilt_color = TILTED_C if tilt_lbl else UPRIGHT_C
+    ax.text(py_pred + 3, pz_pred + 3,
+            f"({py_pred:+.0f}, {pz_pred:+.0f}) mm\n{tilt_str} {tilt_conf:.0f}%",
+            color=tilt_color, fontsize=8, fontfamily="monospace", zorder=10,
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="#1E1E2E", alpha=0.75))
+
+    pred_handle = mpatches.Patch(color=PRED_C,
+                                  label=f"Pred Y={py_pred:+.0f} Z={pz_pred:+.0f} mm  {tilt_str}")
+
+    # ── Ground truth (sim only) ───────────────────────────────────────────────
+    gt_handle = None
+    if gt_available:
+        gy = hold["pos_y"].values.mean() * 1000.0
+        gz = hold["pos_z"].values.mean() * 1000.0
+
+        meta_path = session_path / "meta.json"
+        if meta_path.exists():
+            ep  = json.loads(meta_path.read_text())["episode_info"]
+            tx  = np.rad2deg(ep["tilt_x_rad"])
+            tz  = np.rad2deg(ep["tilt_z_rad"])
+            mag = np.sqrt(tx**2 + tz**2)
+            if mag > 0.5:
+                # tz → rotation around Z → displacement in Y; tx → rot around X → displacement in Z
+                dy_gt = tz / mag * 22
+                dz_gt = tx / mag * 22
+                ax.annotate("", xy=(gy + dy_gt, gz + dz_gt),
+                                xytext=(gy - dy_gt, gz - dz_gt),
+                            arrowprops=dict(arrowstyle="->", color=GT_C, lw=2.5), zorder=6)
+            ax.scatter(gy, gz, s=220, c=GT_C, marker="^",
+                       zorder=7, edgecolors="white", linewidths=1.5)
+            gt_handle = mpatches.Patch(
+                color=GT_C,
+                label=f"GT  Y={gy:+.0f} Z={gz:+.0f} mm  tilt {mag:.1f}°",
+            )
+
+    # ── Axes ─────────────────────────────────────────────────────────────────
+    ax.set_xlabel("Y  (lateral mm)",  fontsize=9)
+    ax.set_ylabel("Z  (height mm)",   fontsize=9)
+    ax.set_title(f"{session_path.name}\nFront view  (lateral × height)", fontsize=9,
+                 color="white", pad=8)
+
+    handles = [h for h in [pred_handle, gt_handle] if h is not None]
+    ax.legend(handles=handles, fontsize=8, loc="lower right",
+              facecolor="#2A2A3E", labelcolor="white", framealpha=0.85)
+
+    plt.tight_layout()
+    plt.savefig(out_png, dpi=150, bbox_inches="tight", facecolor=BG)
+    plt.close(fig)
+    print(f"Saved  → {out_png}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         session = Path(sys.argv[1])
@@ -504,6 +618,51 @@ if __name__ == "__main__":
         session  = sessions[10]
         print(f"No session given — using default: {session.name}")
 
-    png_out = HERE / f"{session.name}_result.png"
-    run(session, save_png=png_out)
+    # ── Load once, use for both outputs ───────────────────────────────────────
+    hold, gt_available = load_session(session)
+    (pos_model,  pos_scaler,  pos_cols,
+     tilt_model, tilt_scaler, tilt_cols,
+     slip_model, slip_scaler, slip_cols) = load_models()
+
+    pred_xyz, pred_ori     = predict_position(hold, pos_model, pos_scaler, pos_cols)
+    tilt_lbl, tilt_proba   = predict_tilt(hold, tilt_model, tilt_scaler, tilt_cols)
+    slip_prob              = predict_slip(hold, slip_model, slip_scaler, slip_cols)
+
+    mean_pos  = pred_xyz.mean(axis=0)
+    mean_ori  = pred_ori.mean(axis=0)   # mean sin_roll,cos_roll,sin_pitch,cos_pitch,...
+    tilt_conf = tilt_proba[tilt_lbl] * 100
+
+    print(f"\nSession : {session.name}")
+    print(f"Frames  : {len(hold)}  |  GT: {'yes' if gt_available else 'no'}")
+    print(f"Position: X={mean_pos[0]:+.1f}  Y={mean_pos[1]:+.1f}  Z={mean_pos[2]:+.1f} mm")
+    print(f"Tilt    : {'TILTED' if tilt_lbl else 'upright'}  ({tilt_conf:.0f}% conf)")
+    print(f"Slip    : {(slip_prob > 0.5).mean()*100:.0f}% of frames")
+    if gt_available:
+        gt_xyz = hold[["pos_x", "pos_y", "pos_z"]].values * 1000.0
+        errs   = np.linalg.norm(pred_xyz - gt_xyz, axis=1)
+        print(f"GT error: mean={errs.mean():.1f} mm  median={np.median(errs):.1f} mm")
+
+    # Hand skeleton at mean joint angles (shared between both outputs)
+    mean_act = hold[[f"angle_act_{d}" for d in DOF_NAMES]].mean()
+    joint_q  = {DOF_TO_JOINT[d]: (1.0 - mean_act[f"angle_act_{d}"] / 1000.0) * DOF_QMAX[d]
+                for d in DOF_NAMES}
+    body_pos = finger_positions_mm(joint_q)
+
+    preloaded = dict(hold=hold, gt_available=gt_available,
+                     pred_xyz=pred_xyz, pred_ori=pred_ori,
+                     tilt_lbl=tilt_lbl, tilt_proba=tilt_proba, slip_prob=slip_prob)
+
+    # Full 8-panel result
+    run(session, save_png=HERE / f"{session.name}_result.png", _preloaded=preloaded)
+
+    # Simple top-down compare view
+    save_compare(session,
+                 out_png       = HERE / f"{session.name}_compare.png",
+                 pred_xyz_mean = mean_pos,
+                 pred_ori_mean = mean_ori,
+                 tilt_lbl      = tilt_lbl,
+                 tilt_conf     = tilt_conf,
+                 hold          = hold,
+                 gt_available  = gt_available,
+                 body_pos      = body_pos)
     # run(session, animate=True)   # uncomment for interactive window
