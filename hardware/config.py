@@ -68,21 +68,49 @@ ERROR_BITS = {0: "stall", 1: "over-temp", 2: "over-current", 3: "motor fault", 4
 # the manual gives no meaning for STATUS; inferred from the recorded dataset (see AGENTS.md)
 STATUS_NAMES = {0: "releasing", 1: "closing/hold", 2: "force stop", 255: "not init"}
 
-FORCE_LIMIT = 3000          # force_set per DOF (0–3000); the finger stops gently at this force
+FORCE_LIMIT = 2500         # force_set of the fingers (0–3000) for the grip (Grip force slider)
+WRITE_SAFE_FORCE = 1500    # no writes but Open / Clear errors while a finger presses this hard: in
+                           # logs 20261017_* 0 of 155 writes below 1500 g froze the motor controller,
+                           # 3 of 10 at 1500–2000 g and 11 of 213 at >= 2000 g
+CLOSE_FORCE_LIMIT = 1000   # force_set of the fingers during Close until its last stage (full grip)
+THUMB_ROT_MID = 300       # Close: thumb rotation goes out to this before the middle finger closes ...
+THUMB_ROT_SLOW_SPEED = 100 # ... and then to 1000 at this speed (0–1000) before the index closes
+                           # (100: 300 -> 1000 takes ~4 s; at 200 it pushed the object 300 further)
+THUMB_DONE_TIMEOUT_S = 8.0 # the index waits for that rotation to stop (target or object), at most this
+STAGE_DELAY_MS = 300       # pause between the Close stages
+THUMB_RETURN_WAIT_MS = 1000  # Close: wait after the middle closes before the thumb rotates to 1000
+STAGE_WAIT_S = 3.0         # a stage waits at most this long for every finger to press < WRITE_SAFE_FORCE
 FORCE_LIMIT_THUMB_BEND = 1000  # force_set of thumb bending
-FORCE_LIMIT_THUMB_ROT = 200    # force_set of thumb rotation: low, so it stops softly on the object
+FORCE_LIMIT_THUMB_ROT = 100    # force_set of thumb rotation: low, so it stops softly on the object
                                # (its force reading at rest has been ~50, but also ~440 – then it can't move)
 OPEN_FORCE_LIMIT = 3000    # force_set while opening: releasing squeezes nothing (hand default)
-SPEED_FINGERS = 1000       # speed_set of the fingers (0–1000; 1000 = full stroke in ~0.6 s)
+SPEED_FINGERS = 500        # speed_set of the fingers (0–1000; 1000 = full stroke in ~0.6 s);
+                           # slower = less force overshoot when a finger hits the object
 SPEED_THUMB = 1000          # slower thumb: gentler contact, lower current, time for the guard to react
 
 # Thumb rotation guard: the hand's force limit never stops a rotation that pushes the object
-# sideways (its force reading goes negative), so the software stops it when any of these trips
-ROT_STOP_PRESSURE = 1000    # thumb taxel value above baseline (on >= CONTACT_MIN_TAXELS taxels)
-ROT_STOP_FORCE = 200       # |thumb_rot force - its resting value|, either sign
-ROT_STOP_CURRENT = 400     # thumb_rot current in mA
-ROT_STEP = 50              # rotation sweeps move in steps of this size, one per STAGE_DELAY_MS
-STAGE_DELAY_MS = 300       # pause between the stages of open/close so thumb and fingers don't collide
+# sideways, so the software stops it when one of these trips. (Its force reading isn't used: it
+# reads -250…-340 while the thumb rotates freely and keeps 200–600 off rest after a move with no
+# current, so it stopped free moves at 77, 206 and 263 in logs/20261017_190436.)
+ROT_STOP_PRESSURE = 500    # thumb taxel value above baseline ...
+ROT_STOP_TAXELS = 5        # ... on at least this many thumb taxels
+ROT_MOVE_CURRENT = 150     # |thumb_rot current| while it still rotates that counts as pushing the
+ROT_MOVE_PUSH_S = 0.2      # object along, for this long. Free rotation at speed 200 read 40–140 mA;
+                           # pushing in logs/20261017_192143 read 250–730 mA from angle ~520 on, while
+                           # its sensors showed nothing until 891. Lower = stops earlier (at 0.1 s it
+                           # also tripped on normal fast moves in the logs)
+ROT_MOVE_SKIP_S = 0.15     # not counted this long after a rotation command (start spike) ...
+ROT_MOVE_NEAR = 60         # ... nor this close to the target (braking spike)
+ROT_STOP_CURRENT = 300     # |thumb_rot current| in mA, counted only while the thumb isn't moving:
+                           # it reads 300–800 mA for 1–4 frames when it brakes at its target or starts
+                           # a move (logs 20261017_*); pushing read -300…-440 mA pulses while still
+ROT_STILL_S = 0.15         # "not moving" = the rotation angle changed by at most ROT_STILL_TOL
+ROT_STILL_TOL = 10         # over the last ROT_STILL_S
+ROT_PUSH_S = 0.2           # current above ROT_STOP_CURRENT this long after the first such reading,
+                           # with the thumb still the whole time, counts as pushing
+ROT_STALL_S = 0.4          # "can't rotate further": moved at most ROT_STILL_TOL in this long, at least
+ROT_STALL_TOL = 20         # this long after its last command, and still more than this short of the
+                           # target (at speed 200 it pauses up to 0.15 s between steps while moving)
 TEMP_WARN_C = 60           # highlight the status readout above this motor temperature
 TEMP_VALID_MAX = 100       # manual: TEMP range is 0–100 °C, above is a corrupted reading (display only)
 
@@ -93,9 +121,15 @@ OPEN_ANGLES = [950, 950, 950, 950, 950, 750]
 STILL_TOL = 3              # angle change per GUI tick below which a DOF counts as not moving
 STILL_S = 0.4              # the hand must be still this long for a move to count as finished
 NO_OBJECT_S = 0.5          # no pad/palm contact this long in HOLD -> "No object" shown
-HOLD_STOP_S = 1.0          # this long after entering HOLD all motors stop (targets = measured angles)
-MOVE_TIMEOUT_S = 3.0       # opening/closing that takes longer than this -> warning (not FAULTY)
+FREEZE_S = 0.3             # motor feedback unchanged this long while frames keep arriving = the hand's
+                           # motor controller is frozen (live feedback stayed unchanged <= 0.26 s in
+                           # the logs, bar two runs of 0.41/0.44 s)
+MOVE_TIMEOUT_S = 3.0      # opening/closing that takes longer than this -> warning (not FAULTY)
 ERROR_CLEAR_GRACE_S = 0.5  # ignore error flags this long after clearing them
+STALL_RETRIES = 3          # a stall-only fault is cleared and the move sent again at most this often
+STALL_RETRY_WINDOW_S = 10.0  # ... within this long; one more and the hand goes FAULTY as before
+                           # (logs/20261017_201853: the index flagged a stall while idle and open,
+                           # stayed in status 7, and moved normally on the next command)
 
 TACTILE_START = 3000       # all tactile areas are one contiguous block
 TACTILE_WORDS = 1062       # bytes 3000–5123
@@ -168,7 +202,19 @@ CONTACT_THRESHOLD = 30
 # Auto hold: close the hand when an object is placed on the palm
 CONTACT_MIN_TAXELS = 5       # taxels above CONTACT_THRESHOLD that count as a contact
 AUTO_HOLD_TRIGGER_S = 0.1    # contact must persist this long before the hand closes
-AUTO_HOLD_REARM_S = 1.0      # palm must stay clear this long before auto hold can trigger again
+AUTO_HOLD_REARM_S = 1.0      # palm and pads must stay clear this long before auto hold can trigger again
+# surfaces whose contact (>= CONTACT_MIN_TAXELS taxels) starts auto close; the finger pads read <= 2
+# taxels while the hand stood open in logs/20261017_*, the fingertips ("Nail") up to 5, so not those
+AUTO_CLOSE_GROUPS = ["Palm", "Little Pad", "Ring Pad", "Middle Pad", "Index Pad"]
+AUTO_CLOSE_THRESHOLD = 100   # taxel value above baseline that counts for auto close / auto record.
+                             # At CONTACT_THRESHOLD (30) the pads' baseline drift (58–84 on 4–5 index
+                             # pad taxels, 20:23–20:24) closed the hand on nothing 4 times; at 100 none
+                             # of those trigger and all 36 real objects still do (logs 20261017_20*)
+AUTO_RECORD_HOLD_S = 2.0     # Auto record: logging stops this long after the grip is finished
+                             # (HOLD, i.e. the index closed and nothing moves), then the hand opens
+AUTO_RECORD_FROZEN_S = 2.0   # ... or after the motor data has been frozen this long, and opens anyway
+                             # (a frozen hand carries the Open out once it recovers, or once the
+                             # object is taken out)
 
 # ----------------------------
 # MODBUS
@@ -404,7 +450,8 @@ logger = DataLogger()
 # ----------------------------
 stop_event = threading.Event()
 latest_lock = threading.Lock()
-latest = {"tactile": None, "actuators": None, "t": 0.0}
+latest = {"tactile": None, "actuators": None, "t": 0.0, "act_changed_t": 0.0}
+ACT_FEEDBACK = ("pos_act", "angle_act", "force_act", "current", "temp")
 stats = {"rate_hz": 0.0, "errors": 0}
 
 def acquisition_loop():
@@ -415,6 +462,7 @@ def acquisition_loop():
     period = 1.0 / SAMPLE_RATE_HZ
     next_t = time.perf_counter()
     last_t = None
+    last_fb, act_changed_t = None, time.time()
 
     while not stop_event.is_set():
         t = time.time()
@@ -425,12 +473,18 @@ def acquisition_loop():
             stats["errors"] += 1
         else:
             tactile = correct_tactile(raw)
+            # live motor feedback always changes a little within FREEZE_S (force/current noise)
+            fb = tuple(tuple(act[k]) for k in ACT_FEEDBACK)
+            if fb != last_fb:
+                last_fb, act_changed_t = fb, t
             with latest_lock:
                 latest["tactile"] = tactile
                 latest["actuators"] = act
                 latest["t"] = t
+                latest["act_changed_t"] = act_changed_t
             logger.log(t, act, tactile)
-            rot_guard.update(act, tactile, hand["state"])
+            if t - act_changed_t <= FREEZE_S:      # no decisions on frozen motor data
+                rot_guard.update(act, tactile, hand["state"])
 
             if last_t is not None:   # smoothed actual rate for the GUI
                 stats["rate_hz"] = 0.9 * stats["rate_hz"] + 0.1 / max(1e-6, t - last_t)
@@ -446,20 +500,33 @@ def acquisition_loop():
 
 acq_thread = threading.Thread(target=acquisition_loop, daemon=True)
 
+def start_logging():
+    if not calibrated:
+        print("Note: sensors not calibrated yet – offsets are 0.")
+    logger.start()
+    log_button.config(text="■ Stop logging", bg="#ff6666")
+
+def stop_logging():
+    logger.stop()
+    log_button.config(text="● Start logging", bg=log_button_bg)
+    hand.update(auto_rec=False, auto_rec_hold_t=None)
+
 def toggle_logging():
     if logger.active:
-        logger.stop()
-        log_button.config(text="● Start logging", bg=log_button_bg)
+        stop_logging()
     else:
-        if not calibrated:
-            print("Note: sensors not calibrated yet – offsets are 0.")
-        logger.start()
-        log_button.config(text="■ Stop logging", bg="#ff6666")
+        start_logging()
 
 def update_log_label():
     rate = f"Acquisition: {stats['rate_hz']:.1f} Hz (target {SAMPLE_RATE_HZ})"
     if stats["errors"]:
         rate += f", {stats['errors']} read errors"
+    if hand["auto_rec"]:
+        t = hand["auto_rec_hold_t"]
+        rate += ("\nAuto record: recording until the grip is finished" if t is None else
+                 f"\nAuto record: stops and opens in {max(0.0, AUTO_RECORD_HOLD_S - (time.time() - t)):.1f} s")
+    elif auto_record_var.get():
+        rate += "\nAuto record: waiting for an object"
     if logger.active:
         log_label.config(text=f"{rate}\n{os.path.relpath(logger.session_dir, BASE_DIR)}\n"
                               f"{logger.frame} frames, {time.time() - logger.t0:.1f} s")
@@ -469,8 +536,30 @@ def update_log_label():
 # ----------------------------
 # CONTROL
 # ----------------------------
-def write_shorts(addr, values):
-    """Writes registers; returns False (and prints why) if the write failed."""
+write_skip_printed_at = 0.0
+last_write_t = 0.0          # when the last write went out (stages wait for the hand to respond)
+
+def finger_load(act):
+    """Highest force reading of the four fingers (g)."""
+    return max(act["force_act"][:4])
+
+def write_shorts(addr, values, force=False):
+    """Writes registers; returns False (and prints why) if the write failed or was skipped.
+    While a finger presses with WRITE_SAFE_FORCE or more, only force=True writes (Open, Clear
+    errors) go out: a write while the fingers grip can freeze the hand's motor controller, and a
+    frozen hand doesn't let the clamped fingers go. In logs/20261017_* (until 20:32) that
+    happened after 1 of 428 writes with every finger below 500 g, 3 of 87 at 500–1500 g, 3 of 40
+    at 1500–2000 g and 11 of 269 at 2000 g or more."""
+    global write_skip_printed_at, last_write_t
+    if not force:
+        with latest_lock:
+            act = latest["actuators"]
+        if act is not None and finger_load(act) >= WRITE_SAFE_FORCE:
+            if time.time() - write_skip_printed_at > 1.0:
+                write_skip_printed_at = time.time()
+                print(f"Write to {addr} skipped: a finger presses {finger_load(act)} g "
+                      f"(>= {WRITE_SAFE_FORCE}) – only Open goes out now.")
+            return False
     try:
         with modbus_lock:
             res = client.write_registers(address=addr, values=values, device_id=1)
@@ -480,13 +569,14 @@ def write_shorts(addr, values):
     if res.isError():
         print(f"Write to {addr} failed: {res}")
         return False
+    last_write_t = time.time()
     return True
 
 errors_cleared_at = 0.0
 
 def clear_errors():
     global errors_cleared_at
-    if write_shorts(CLEAR_ERROR_ADDR, [1]):
+    if write_shorts(CLEAR_ERROR_ADDR, [1], force=True):
         errors_cleared_at = time.time()
         print("Cleared hand error flags.")
 
@@ -510,14 +600,28 @@ def set_move_limits(targets):
                   for t, a, g in zip(targets, act["angle_act"], limits)]
     write_shorts(ACT_SHORT_FIELDS["force_set"][0], limits)
 
-def write_angles():
-    # latched errors are never cleared here – only the Clear errors button does that
+def target_angles():
     targets = [s.get() for s in sliders]
     if rot_guard.reason and hand["state"] != "RELEASING":
         # thumb is pressing: keep the rotation where the guard stopped it (Open is exempt)
         targets[5] = rot_guard.stop_angle
         sliders[5].set(targets[5])
-    write_shorts(ACT_SHORT_FIELDS["angle_set"][0], targets)
+    return targets
+
+def write_angles(force=False):
+    # latched errors are never cleared here – only the Clear errors button does that
+    write_shorts(ACT_SHORT_FIELDS["angle_set"][0], target_angles(), force)
+
+def write_pose(angles, limits, force=False):
+    """Targets and force limits in ONE write: angle_set (1486) and force_set (1498) are adjacent,
+    so 12 registers from 1486 set both. Each extra write while the fingers grip is a chance to
+    freeze the hand (see write_shorts)."""
+    for s, a in zip(sliders, angles):
+        s.set(a)
+    write_shorts(ACT_SHORT_FIELDS["angle_set"][0], list(angles) + list(limits), force)
+
+def set_speeds(fingers=SPEED_FINGERS, thumb_rot=SPEED_THUMB, force=False):
+    write_shorts(ACT_SHORT_FIELDS["speed_set"][0], [fingers] * 4 + [SPEED_THUMB, thumb_rot], force)
 
 def hold_position(act):
     """Stop driving: every target becomes the measured angle, so the motors stop pushing
@@ -527,19 +631,24 @@ def hold_position(act):
         s.set(a)
     write_shorts(ACT_SHORT_FIELDS["angle_set"][0], list(act["angle_act"]))
 
-def motion_blocked():
-    """True (and the command is dropped) while the hand is FAULTY."""
-    if hand["state"] != "FAULTY":
-        return False
-    print(f"Command ignored: hand is FAULTY ({hand['reason']}) – press Clear errors first.")
+def motion_blocked(gripping_ok=False):
+    """True (and the command is dropped) while the hand is FAULTY, or – unless gripping_ok –
+    while a finger presses with WRITE_SAFE_FORCE or more (only Open may be sent then)."""
     with latest_lock:
         act = latest["actuators"]
+    if hand["state"] == "FAULTY":
+        print(f"Command ignored: hand is FAULTY ({hand['reason']}) – press Clear errors first.")
+    elif not gripping_ok and act is not None and finger_load(act) >= WRITE_SAFE_FORCE:
+        print(f"Command ignored: a finger presses {finger_load(act)} g – press Open first "
+              "(writes at this force can freeze the hand).")
+    else:
+        return False
     if act is not None:         # put the sliders back to what the hand is really set to
         for s, a in zip(sliders, act["angle_set"]):
             s.set(a)
     return True
 
-# open/close move in stages; any new command cancels the stages still pending
+# Close moves in stages; any new command cancels the stages still pending
 pending_moves = []
 
 def cancel_pending_moves():
@@ -548,15 +657,59 @@ def cancel_pending_moves():
     pending_moves.clear()
 
 def run_stages(stages):
-    """stages: list of {dof_index: angle}, applied STAGE_DELAY_MS apart."""
+    """stages: list of (action, wait_ms[, ready[, send_loaded]]): action is {dof_index: angle} or
+    a function to call; the next stage follows wait_ms later. With ready (a function), the stage
+    first waits up to THUMB_DONE_TIMEOUT_S for ready() to be true. A stage only goes out while
+    every finger presses less than WRITE_SAFE_FORCE: it waits up to STAGE_WAIT_S for that, then
+    the sequence stops there. A send_loaded stage doesn't wait: it goes out right away, with a
+    warning if a finger is loaded."""
     cancel_pending_moves()
-    def apply(k):
+    def apply(k, due=None, load_due=None):
         pending_moves.clear()       # this stage is running now
-        for i, v in stages[k].items():
-            sliders[i].set(v)
-        write_angles()
+        now = time.time()
+        with latest_lock:
+            frozen = now - latest["t"] > 0.5 or latest["t"] - latest["act_changed_t"] > FREEZE_S
+            answered = latest["act_changed_t"] > last_write_t
+        if not frozen and not answered:
+            # the motor readings haven't changed since the last write yet (normally < 0.1 s):
+            # a write into the first FREEZE_S of a freeze would only queue up (logs/203103)
+            pending_moves.append(root.after(30, apply, k, due, load_due))
+            return
+        if frozen:
+            # nothing to decide on (and a write now would only queue up): wait for live motor
+            # data, then this stage's waits start over
+            warn_hand_state(f"close paused before stage {k + 1}/{len(stages)}: motor data frozen")
+            pending_moves.append(root.after(100, apply, k))
+            return
+        due = now if due is None else due
+        action, wait_ms, ready, send_loaded = (tuple(stages[k]) + (None, False))[:4]
+        if ready is not None and not ready() and now - due < THUMB_DONE_TIMEOUT_S:
+            pending_moves.append(root.after(100, apply, k, due, load_due))   # keep both waits
+            return
+        with latest_lock:
+            act = latest["actuators"]
+        if act is not None and finger_load(act) >= WRITE_SAFE_FORCE:
+            if not send_loaded:
+                load_due = now if load_due is None else load_due
+                if now - load_due < STAGE_WAIT_S:
+                    pending_moves.append(root.after(100, apply, k, due, load_due))
+                    return
+                warn_hand_state(f"close stopped before stage {k + 1}/{len(stages)}: "
+                                f"a finger presses {finger_load(act)} g")
+                return
+            print(f"WARNING: Close stage {k + 1}/{len(stages)} sent while a finger presses "
+                  f"{finger_load(act)} g – this write can freeze the hand (then Open only "
+                  "works once the object is taken out).")
+        if callable(action):
+            action()
+        else:
+            if 5 in action:
+                rot_guard.release()
+            for i, v in action.items():
+                sliders[i].set(v)
+            write_angles()
         if k + 1 < len(stages):
-            pending_moves.append(root.after(STAGE_DELAY_MS, apply, k + 1))
+            pending_moves.append(root.after(wait_ms, apply, k + 1))
     apply(0)
 
 def send_angles():
@@ -564,32 +717,63 @@ def send_angles():
     if motion_blocked():
         return
     cancel_pending_moves()
+    rot_guard.release()
     set_move_limits([s.get() for s in sliders])
     write_angles()
     set_hand_state("IDLE", "manual pose")
 
 def open_hand():
-    if motion_blocked():
+    if motion_blocked(gripping_ok=True):
         return
-    # the grip force limit would stop a DOF whose force reading rises while opening
-    write_shorts(ACT_SHORT_FIELDS["force_set"][0], [OPEN_FORCE_LIMIT] * 6)
-    # thumb bend first so it lets go of the fingers, thumb rotation last
-    run_stages([{4: 1000}, {0: 1000, 1: 1000, 2: 1000, 3: 1000}, {5: 1000}])
+    cancel_pending_moves()
+    # RELEASING first, so the rotation guard leaves the thumb alone; Open always goes out, even
+    # at full grip (force=True), as ONE write. OPEN_FORCE_LIMIT: the grip force limit would stop
+    # a DOF whose force reading rises while opening
     set_hand_state("RELEASING")
-
-def rotation_sweep(start, end, step=ROT_STEP):
-    """Stages that move the thumb rotation from start to end in small steps, so the guard
-    gets a check between steps instead of one big push."""
-    sign = 1 if end > start else -1
-    return [{5: a} for a in range(start + sign * step, end, sign * step)] + [{5: end}]
+    write_pose([1000] * 6, [OPEN_FORCE_LIMIT] * 6, force=True)
 
 def close_hand():
+    """Thumb in (rotation and bend 0), little + ring, thumb rotation out to THUMB_ROT_MID, middle,
+    THUMB_RETURN_WAIT_MS later (and once the thumb has stopped) the thumb rotation slowly to
+    1000, and once that rotation has stopped (at its target, on the object, or by the guard) the
+    index. The fingers close with only CLOSE_FORCE_LIMIT until the last stage, which closes the
+    index and sets the full grip force in one write: every stage is a write, and writes while a
+    finger grips hard can freeze the hand. The last two stages go out even then (with a
+    warning). The speeds go back to normal once the hand is open again."""
     if motion_blocked():
         return
-    set_force_limit()           # back to the grip force (Open raised it)
-    # fingers first, then the thumb, so the thumb ends up over the fingers, not trapped under them
-    run_stages([{5: 0, 4: 0},{0: 0, 1: 0},{5:110},{2: 0, 3: 600}, *rotation_sweep(110, 1000), {3:0}])
+    set_speeds()
+    set_force_limit(CLOSE_FORCE_LIMIT)
+    def middle():
+        sliders[2].set(0)
+        write_angles()
+        # the slow thumb speed goes out now, while the fingers are still moving (180–330 g in the
+        # logs), not with the thumb stage below when they grip: one write less under load
+        set_speeds(thumb_rot=THUMB_ROT_SLOW_SPEED)
+    def thumb_slow():
+        # run_stages has already waited for the load; it goes out even at full load (force=True)
+        with latest_lock:
+            act = latest["actuators"]
+        if act is None or act["speed_set"][5] != THUMB_ROT_SLOW_SPEED:   # middle() couldn't set it
+            set_speeds(thumb_rot=THUMB_ROT_SLOW_SPEED, force=True)
+        rot_guard.release()
+        sliders[5].set(1000)
+        write_angles(force=True)
+    def thumb_done():
+        return rot_guard.settled()
+    def index_full_grip():
+        # run_stages has already waited for the load; it goes out even at full load (force=True)
+        sliders[3].set(0)
+        write_shorts(ACT_SHORT_FIELDS["angle_set"][0], target_angles() + grasp_limits(), force=True)
     set_hand_state("CLOSING")
+    run_stages([
+        ({5: 0, 4: 0}, STAGE_DELAY_MS),
+        ({0: 0, 1: 0}, STAGE_DELAY_MS),
+        ({5: THUMB_ROT_MID}, STAGE_DELAY_MS),
+        (middle, THUMB_RETURN_WAIT_MS),
+        (thumb_slow, STAGE_DELAY_MS, thumb_done, True),
+        (index_full_grip, 0, thumb_done, True),
+    ])
 
 def clear_faults():
     # if the hand is still too hot it sets the over-temp flag again and the state returns to FAULTY
@@ -618,17 +802,21 @@ HAND_STATE_COLORS = {"IDLE": "gray40", "OPENED": "#008800", "CLOSING": "#cc7700"
 hand = {
     "state": "IDLE", "since": time.time(), "reason": "",
     "last_angles": None, "still_since": time.time(),    # motion detection
-    "palm_clear_since": None, "contact_since": None,    # auto close timers
+    "clear_since": None, "contact_since": None,         # auto close timers
     "auto_armed": False,
-    "motors_off": False,                                # HOLD: motors already stopped
+    "auto_rec": False, "auto_rec_hold_t": None,         # Auto record: session it started, HOLD since
+    "frozen": False,                                    # motor feedback currently frozen
+    "stall_retries": [],                                # times of automatic stall clears
     "no_contact_since": None,                           # "No object" display in HOLD
 }
 
 def set_hand_state(state, reason=""):
     if state != hand["state"]:
         print(f"Hand state: {hand['state']} -> {state}" + (f" ({reason})" if reason else ""))
-    hand.update(state=state, since=time.time(), reason=reason, motors_off=False,
-                palm_clear_since=None, contact_since=None, auto_armed=False)
+        if state == "OPENED":
+            set_speeds()        # Close slows the thumb rotation; reset while the hand is empty
+    hand.update(state=state, since=time.time(), reason=reason,
+                clear_since=None, contact_since=None, auto_armed=False)
 
 def find_fault(act):
     # flags read right after a clear may still be the old ones
@@ -639,12 +827,33 @@ def find_fault(act):
             return f"{key}: {describe_errors(act['error'][i])}"
     return None
 
+def retry_stall(act, now):
+    """Only stall flags (ERROR bit 0) set: clear them and send the current targets again, up to
+    STALL_RETRIES times within STALL_RETRY_WINDOW_S. True if it did."""
+    if not all(e & ~1 == 0 for e in act["error"]):     # any other fault bit: FAULTY as before
+        return False
+    recent = [t for t in hand["stall_retries"] if now - t < STALL_RETRY_WINDOW_S]
+    if len(recent) >= STALL_RETRIES:
+        print(f"Stall again after {STALL_RETRIES} automatic clears within "
+              f"{STALL_RETRY_WINDOW_S:.0f} s – giving up.")
+        return False
+    hand["stall_retries"] = recent + [now]
+    stalled = ", ".join(k for k, e in zip(DOF_KEYS, act["error"]) if e)
+    print(f"Stall on {stalled}: clearing the fault and trying again "
+          f"({len(recent) + 1}/{STALL_RETRIES}).")
+    clear_errors()
+    write_angles()              # the move again (skipped while a finger grips too hard)
+    warn_hand_state(f"stall on {stalled} cleared, retried")
+    return True
+
 def hand_fully_open(act):
     return all(a >= lim for a, lim in zip(act["angle_act"], OPEN_ANGLES))
 
-def palm_has_object(tactile):
-    n, *_ = contact_info(tactile["Palm"])
-    return n >= CONTACT_MIN_TAXELS
+def auto_close_contact(tactile):
+    """Name of the first AUTO_CLOSE_GROUPS surface with CONTACT_MIN_TAXELS taxels above
+    AUTO_CLOSE_THRESHOLD, or None."""
+    return next((name for name in AUTO_CLOSE_GROUPS
+                 if int((tactile[name] > AUTO_CLOSE_THRESHOLD).sum()) >= CONTACT_MIN_TAXELS), None)
 
 def any_contact(tactile):
     return any(contact_info(tactile[name])[0] >= CONTACT_MIN_TAXELS for name, *_ in sensor_groups)
@@ -658,48 +867,109 @@ def object_contact(tactile):
 # ----------------------------
 # 👍 THUMB ROTATION GUARD
 # ----------------------------
-# Runs in the acquisition thread on every frame. When the thumb presses on something, or the
-# rotation's force/current leaves its normal range, the rotation target becomes the measured
-# angle right away, and write_angles holds back further rotation targets while that lasts.
+# Runs in the acquisition thread on every frame. When the thumb presses on something or can't
+# rotate further, the rotation target becomes the measured angle right away and stays there (also
+# through write_angles) until the next rotation command (release()) or Open: it stops, it doesn't
+# keep forcing.
 THUMB_GROUPS = [g[0] for g in sensor_groups if g[4] == "Thumb"]
 
 class RotationGuard:
     def __init__(self):
         self.reason = ""        # why the rotation is stopped; "" = free
         self.stop_angle = None  # angle the rotation was stopped at
-        self.force_rest = None  # thumb_rot force reading while the hand is OPENED
+        self.angles = []        # (time, rotation angle) of the last ROT_STALL_S
+        self.push_since = None  # first high current while the thumb is still; None = moving
+        self.target = None      # rotation target read back from the hand ...
+        self.target_t = 0.0     # ... and when it last changed
+        self.release_angle = None  # angle at release(); pressure only counts once it moved away
+        self.move_push_since = None  # high current while rotating since; None = not pushing
+
+    def moving(self, window=ROT_STILL_S):
+        now = time.time()
+        angles = [a for t, a in self.angles if now - t <= window]
+        return bool(angles) and max(angles) - min(angles) > ROT_STILL_TOL
+
+    def settled(self):
+        """The thumb rotation has stopped: at its target, on the object, or stopped here.
+        False on old samples: update() doesn't run while the motor feedback is frozen. (Frames
+        can be 0.24 s apart when the PC is busy, so "old" is FREEZE_S, not one frame.)"""
+        return (bool(self.angles) and time.time() - self.angles[-1][0] <= FREEZE_S
+                and not self.moving(ROT_STALL_S))
+
+    def release(self):
+        """A new rotation command (GUI thread): the thumb may move again."""
+        if self.reason:
+            print("Thumb rotation free again (new rotation command).")
+        self.reason = ""
+        self.push_since = None
+        self.move_push_since = None
+        self.release_angle = self.angles[-1][1] if self.angles else None
 
     def check(self, act, tactile):
+        now, angle = time.time(), act["angle_act"][5]
+        if self.release_angle is not None and abs(angle - self.release_angle) > ROT_STALL_TOL:
+            self.release_angle = None
         pressed = sum(int((tactile[g] > ROT_STOP_PRESSURE).sum()) for g in THUMB_GROUPS)
-        if pressed >= CONTACT_MIN_TAXELS:
+        if pressed >= ROT_STOP_TAXELS and self.release_angle is None:
             return f"thumb pressure > {ROT_STOP_PRESSURE} on {pressed} taxels"
-        force = act["force_act"][5]
-        if self.force_rest is not None and abs(force - self.force_rest) > ROT_STOP_FORCE:
-            return f"rotation force {force} (rest {self.force_rest:.0f})"
-        if act["current"][5] > ROT_STOP_CURRENT:
-            return f"rotation current {act['current'][5]} mA"
+        current = act["current"][5]
+        if self.move_push_since is not None and now - self.move_push_since >= ROT_MOVE_PUSH_S:
+            return f"pushing while rotating ({current} mA at {angle})"
+        # either direction; braking at a target or starting a move gives a short spike, no push
+        if (abs(current) > ROT_STOP_CURRENT and self.push_since is not None
+                and now - self.push_since >= ROT_PUSH_S):
+            return f"rotation current {current} mA (thumb not moving)"
+        if (now - self.target_t >= ROT_STALL_S and self.settled()
+                and now - self.angles[0][0] >= ROT_STALL_S - 0.05
+                and abs(self.target - angle) > ROT_STALL_TOL):
+            return f"can't rotate further ({angle}, target {self.target})"
         return ""
 
     def update(self, act, tactile, state):
-        if state == "OPENED":   # nothing touches the thumb: learn its resting force reading
-            f = act["force_act"][5]
-            self.force_rest = f if self.force_rest is None else 0.9 * self.force_rest + 0.1 * f
-        reason = "" if state in ("RELEASING", "FAULTY") else self.check(act, tactile)
-        if reason and not self.reason:
+        now = time.time()
+        self.angles = [(t, a) for t, a in self.angles if now - t <= ROT_STALL_S]
+        self.angles.append((now, act["angle_act"][5]))
+        if act["angle_set"][5] != self.target:
+            self.target, self.target_t = act["angle_set"][5], now
+        pushing = (abs(act["current"][5]) > ROT_MOVE_CURRENT and now - self.target_t >= ROT_MOVE_SKIP_S
+                   and abs(self.target - act["angle_act"][5]) > ROT_MOVE_NEAR)
+        if not pushing:
+            self.move_push_since = None
+        elif self.move_push_since is None:
+            self.move_push_since = now
+        if self.moving():
+            self.push_since = None
+        elif abs(act["current"][5]) > ROT_STOP_CURRENT and self.push_since is None:
+            self.push_since = now
+        if state in ("RELEASING", "FAULTY"):
+            if self.reason:
+                print("Thumb rotation free again.")
+            self.reason = ""
+            return
+        if self.reason:         # stopped: stays stopped until release() or Open
+            return
+        reason = self.check(act, tactile)
+        if reason:
             self.stop_angle = act["angle_act"][5]
-            write_shorts(ACT_SHORT_FIELDS["angle_set"][0] + 2 * 5, [self.stop_angle])
-            print(f"Thumb rotation stopped at {self.stop_angle}: {reason}")
-        elif self.reason and not reason:
-            print("Thumb rotation free again.")
-        self.reason = reason
+            if act["angle_set"][5] != self.stop_angle:     # already there: no extra write
+                # sent even while the fingers grip hard: not stopping would keep forcing the thumb
+                if finger_load(act) >= WRITE_SAFE_FORCE:
+                    print(f"WARNING: thumb stop sent while a finger presses {finger_load(act)} g "
+                          "– this write can freeze the hand.")
+                write_shorts(ACT_SHORT_FIELDS["angle_set"][0] + 2 * 5, [self.stop_angle], force=True)
+            print(f"Thumb rotation stopped at {self.stop_angle}: {reason} – holds until the "
+                  "next rotation command.")
+            self.reason = reason
 
 rot_guard = RotationGuard()
+
 
 def update_hand_state(act, tactile):
     """Called from the GUI loop with the latest fresh frames (None if stale)."""
     if act is not None:
         step_hand_state(act, tactile)
     update_auto_close(tactile)
+    update_auto_record()
     update_hand_labels()
     update_object_label(tactile)
 
@@ -735,6 +1005,8 @@ def step_hand_state(act, tactile):
                and now - hand["still_since"] >= STILL_S)
 
     fault = find_fault(act)
+    if fault and state != "FAULTY" and retry_stall(act, now):
+        return
     if fault and state != "FAULTY":
         if any(e & (1 << 1) for e in act["error"]):     # ERROR bit 1 = over-temperature
             hold_position(act)                          # stop every DOF from driving
@@ -746,7 +1018,7 @@ def step_hand_state(act, tactile):
         if stopped and hand_fully_open(act):
             set_hand_state("OPENED")
     elif state == "RELEASING":
-        if not pending_moves and hand_fully_open(act):
+        if hand_fully_open(act):
             set_hand_state("OPENED")
         elif elapsed > MOVE_TIMEOUT_S:
             stuck = [k for k, a, lim in zip(DOF_KEYS, angles, OPEN_ANGLES) if a < lim]
@@ -758,57 +1030,89 @@ def step_hand_state(act, tactile):
             set_hand_state("HOLD", "" if state == "CONTACT" else "no contact detected")
         elif elapsed > MOVE_TIMEOUT_S:
             warn_hand_state("still moving")
-    elif state == "HOLD":
-        # stop driving: no motor can keep pushing against the object (or a stall) and overheat;
-        # the lead screws keep the grip without power
-        if not hand["motors_off"] and elapsed >= HOLD_STOP_S:
-            hold_position(act)
-            hand["motors_off"] = True
-            hand["reason"] = "motors off"
-            print("HOLD: motors stopped (targets = measured angles).")
+    # HOLD stays until Open. Nothing is written in HOLD: the hand's force limit stops the fingers
+    # at force_set, and a write while they grip hard can freeze the hand (see write_shorts)
 
 def update_auto_close(tactile):
-    """Auto close only fires in OPENED, and only after the palm has been clear,
-    so the hand doesn't grab again what it has just let go of."""
-    if not auto_hold_var.get() or hand["state"] != "OPENED" or not calibrated or tactile is None:
+    """Fires when the palm or a finger pad (AUTO_CLOSE_GROUPS) has contact – only in OPENED, and
+    only after all of them have been clear, so the hand doesn't grab again what it has just let
+    go of. Auto close then closes the hand, Auto record starts logging."""
+    auto_close, auto_rec = auto_hold_var.get(), auto_record_var.get()
+    if not (auto_close or auto_rec) or hand["state"] != "OPENED" or not calibrated or tactile is None:
         return
     now = time.time()
-    present = palm_has_object(tactile)
+    present = auto_close_contact(tactile)
     if not hand["auto_armed"]:
         if present:
-            hand["palm_clear_since"] = None
-        elif hand["palm_clear_since"] is None:
-            hand["palm_clear_since"] = now
-        elif now - hand["palm_clear_since"] >= AUTO_HOLD_REARM_S:
+            hand["clear_since"] = None
+        elif hand["clear_since"] is None:
+            hand["clear_since"] = now
+        elif now - hand["clear_since"] >= AUTO_HOLD_REARM_S:
             hand["auto_armed"] = True
     elif not present:
         hand["contact_since"] = None
     elif hand["contact_since"] is None:
         hand["contact_since"] = now
     elif now - hand["contact_since"] >= AUTO_HOLD_TRIGGER_S:
-        print("Auto close: object detected on palm.")
-        close_hand()
+        hand.update(auto_armed=False, clear_since=None, contact_since=None)   # once per object
+        if auto_rec and not logger.active:
+            print(f"Auto record: object detected on {present} – logging started.")
+            start_logging()
+            hand.update(auto_rec=True, auto_rec_hold_t=None)
+        if auto_close:
+            print(f"Auto close: object detected on {present}.")
+            close_hand()
+
+def update_auto_record():
+    """A session Auto record started ends AUTO_RECORD_HOLD_S after the grip is finished (HOLD:
+    the index has closed and nothing moves), then the hand opens – also when the motor data has
+    been frozen for AUTO_RECORD_FROZEN_S. It also ends when the hand is opened or moved by hand
+    before that."""
+    if not hand["auto_rec"]:
+        return
+    if not logger.active:                       # stopped with the button
+        hand.update(auto_rec=False, auto_rec_hold_t=None)
+        return
+    state, now = hand["state"], time.time()
+    with latest_lock:
+        frozen_for = latest["t"] - latest["act_changed_t"]
+    if frozen_for > AUTO_RECORD_FROZEN_S:
+        print(f"Auto record: motor data frozen for {frozen_for:.0f} s – logging stopped, opening "
+              "anyway. Fingers that stay closed let go once the object is taken out.")
+        stop_logging()
+        open_hand()
+        return
+    if state in ("RELEASING", "IDLE"):
+        print("Auto record: hand opened / moved before the grip finished – logging stopped.")
+        stop_logging()
+    elif state == "HOLD":
+        if hand["auto_rec_hold_t"] is None:
+            hand["auto_rec_hold_t"] = now
+        elif now - hand["auto_rec_hold_t"] >= AUTO_RECORD_HOLD_S:
+            print(f"Auto record: grip held {AUTO_RECORD_HOLD_S:.0f} s – logging stopped, opening.")
+            stop_logging()
+            open_hand()
 
 def update_hand_labels():
     state = hand["state"]
     text = f"State: {state}" + (f"  ({hand['reason']})" if hand["reason"] else "")
     hand_state_label.config(text=text, fg=HAND_STATE_COLORS[state])
 
-    if not auto_hold_var.get():
+    if not (auto_hold_var.get() or auto_record_var.get()):
         auto_text = "Off"
     elif not calibrated:
         auto_text = "Waiting for sensor data..."
     elif state != "OPENED":
         auto_text = f"Paused – hand is {state} (runs only when OPENED)"
     elif not hand["auto_armed"]:
-        auto_text = "Waiting for the palm to be clear..."
+        auto_text = "Waiting for the palm and finger pads to be clear..."
     else:
-        auto_text = "Armed – place an object on the palm"
+        auto_text = "Armed – place an object on the palm or a finger pad"
     auto_hold_label.config(text=auto_text)
     rot_label.config(text=f"⚠ Thumb rotation stopped: {rot_guard.reason}" if rot_guard.reason else "")
 
 def toggle_auto_hold():
-    hand.update(palm_clear_since=None, contact_since=None, auto_armed=False)
+    hand.update(clear_since=None, contact_since=None, auto_armed=False)
 
 def step_plus():
     for s in sliders:
@@ -921,7 +1225,7 @@ def draw(tactile):
 def describe_errors(code):
     return ", ".join(n for bit, n in ERROR_BITS.items() if code & (1 << bit)) or f"0x{code:02x}"
 
-def update_status_label(act):
+def update_status_label(act, frozen_s=0.0):
     if act is None:
         status_label.config(text="No actuator data", fg="black")
         return
@@ -941,6 +1245,10 @@ def update_status_label(act):
         lines.append(line)
     valid_temps = [t for t in act["temp"] if t <= TEMP_VALID_MAX]
     problem = any(act["error"]) or max(valid_temps, default=0) >= TEMP_WARN_C
+    if frozen_s:
+        lines.insert(0, f"⚠ MOTOR DATA FROZEN for {frozen_s:.1f} s – hand ignores commands "
+                        "(remove load / power-cycle)")
+        problem = True
     status_label.config(text="\n".join(lines), fg="red" if problem else "black")
 
 # ----------------------------
@@ -952,13 +1260,22 @@ def gui_loop():
         tactile = latest["tactile"]
         act = latest["actuators"]
         t = latest["t"]
+        frozen_s = t - latest["act_changed_t"]
 
     if tactile is not None:
         draw(tactile)
 
-    # don't act on a stale frame if acquisition has stalled
+    # don't act on a stale frame if acquisition has stalled, nor on frozen motor feedback
+    # (it looks like "nothing moves", which would e.g. trigger HOLD or motors off on old angles)
     fresh = time.time() - t < 0.5
-    update_hand_state(act if fresh else None, tactile if fresh else None)
+    frozen = act is not None and frozen_s > FREEZE_S
+    if frozen and not hand["frozen"]:
+        print(f"WARNING: motor feedback frozen (unchanged for {frozen_s:.1f} s) – the hand ignores "
+              "commands. Remove the load or power-cycle the hand.")
+    elif hand["frozen"] and not frozen:
+        print("Motor feedback live again.")
+    hand["frozen"] = frozen
+    update_hand_state(act if fresh and not frozen else None, tactile if fresh else None)
 
     # take the current target angles from the hand once at startup
     if not sliders_initialised and act is not None:
@@ -966,7 +1283,7 @@ def gui_loop():
             sliders[i].set(act["angle_set"][i])
         sliders_initialised = True
 
-    update_status_label(act if fresh else None)
+    update_status_label(act if fresh else None, frozen_s if frozen else 0.0)
     update_log_label()
     if not closing:
         root.after(GUI_RATE_MS, gui_loop)
@@ -1037,7 +1354,7 @@ auto_hold_frame = tk.LabelFrame(left_frame, text="Auto hold")
 auto_hold_frame.pack(fill="x", pady=10)
 
 auto_hold_var = tk.BooleanVar(value=False)
-tk.Checkbutton(auto_hold_frame, text="Close hand when an object touches the palm",
+tk.Checkbutton(auto_hold_frame, text="Close hand when an object touches the palm or a finger pad",
                variable=auto_hold_var, command=toggle_auto_hold).pack(anchor="w")
 
 auto_hold_label = tk.Label(auto_hold_frame, text="Off", justify="left")
@@ -1052,6 +1369,12 @@ log_frame.pack(fill="x", pady=10)
 log_button = tk.Button(log_frame, text="● Start logging", command=toggle_logging)
 log_button.pack(fill="x")
 log_button_bg = log_button.cget("bg")
+
+auto_record_var = tk.BooleanVar(value=False)
+tk.Checkbutton(log_frame, text="Auto record: log from object detection until "
+               f"{AUTO_RECORD_HOLD_S:g} s after the grip, then open", variable=auto_record_var,
+               command=toggle_auto_hold,
+               wraplength=300, justify="left").pack(anchor="w")
 
 log_label = tk.Label(log_frame, text="Logging off", justify="left")
 log_label.pack(fill="x")
@@ -1095,7 +1418,7 @@ root.protocol("WM_DELETE_WINDOW", on_close)
 signal.signal(signal.SIGINT, lambda *args: root.after(0, on_close))
 
 set_force_limit(FORCE_LIMIT)
-write_shorts(ACT_SHORT_FIELDS["speed_set"][0], [SPEED_FINGERS] * 4 + [SPEED_THUMB] * 2)
+set_speeds()
 acq_thread.start()
 gui_loop()
 root.mainloop()
