@@ -35,3 +35,5 @@ models/dataset/*.h5
 # --- OS Generated ---
 .DS_Store
 Thumbs.db
+pose/output/
+__pycache__/
