@@ -29,6 +29,7 @@ def family(v):
 
 def main():
     sessions = sys.argv[1:] or list(LABELS)
+    C.set_hand("right")  # the 13 labelled grasps (2026-10-16) were recorded with the right hand
     hand, objs, rows = HandModel(), {}, []
     print(f"{'session':16s} {'sensor':9s} {'photo':9s} {'fit':9s} {'end dir err':>11s} {'axis err':>8s} {'rms':>5s}")
     for sess in sessions:

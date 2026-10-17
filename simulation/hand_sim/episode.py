@@ -178,7 +178,7 @@ class HandoverEpisode:
         rot = _quat_angle(quat0, quat1)
         contacts = self.world.object_contacts(self.obj_id, min_dist=0.0005)
         floor = any(b == 0 for b, _ in contacts)
-        hand_bodies = {b for b, _ in contacts if self.world.m.body(b).name.startswith("right_")}
+        hand_bodies = {b for b, _ in contacts if self.world.m.body(b).name.startswith(f"{C.HAND_SIDE}_")}
         if floor or shift > DROP_SHIFT_M:
             failure = "dropped"
         elif shift > C.SUCCESS_MAX_SHIFT_M:

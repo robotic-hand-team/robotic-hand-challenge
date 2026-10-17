@@ -15,7 +15,7 @@ from scipy.spatial.transform import Rotation
 
 from . import config as C
 
-HAND_ROOT_BODY = "right_hand_root"
+HAND_ROOT_BODY = f"{C.HAND_SIDE}_hand_root"
 # URDF fixed joint base -> hand_base_link: rpy="-1.57079 0 3.14159" (same in pose/ and simulation/ URDF).
 R_BASE_HBL = Rotation.from_euler("xyz", [-1.57079, 0.0, 3.14159]).as_matrix()
 
@@ -37,14 +37,13 @@ def hand_base_link_in_world(m, d) -> np.ndarray:
 
 def load(path) -> dict:
     est = json.loads(Path(path).read_text())
-    if est.get("hand") == "left":
-        # The simulation only has the right hand. The left URDF is the right one mirrored across the
-        # palm (hand_base_link z -> -z), so the mirror image of a left-hand grasp is a valid right-hand
-        # grasp with the same joint angles. S T S keeps the rotation proper; the sensor is shown with
-        # its CAD z mirrored, which for these near-axisymmetric sensors looks the same.
+    if est.get("hand", "right") != C.HAND_SIDE:
+        # Estimate from the other hand than the one simulated (set HAND_SIDE to match, or accept a
+        # mirror view): the hands are mirror images across the palm (hand_base_link z -> -z), so the
+        # mirrored grasp is valid with the same joint angles. S T S keeps the rotation proper.
         S = np.diag([1.0, 1.0, -1.0, 1.0])
         est["T_hand_cad"] = (S @ np.array(est["T_hand_cad"]) @ S).tolist()
-        est["status"] = f"{est['status']} (left hand, shown mirrored)"
+        est["status"] = f"{est['status']} ({est.get('hand', 'right')}-hand estimate shown mirrored)"
     if est["object"] not in C.OBJECTS:
         raise KeyError(f"object {est['object']!r} not in simulation (have {list(C.OBJECTS)})")
     return est
@@ -125,7 +124,7 @@ def _hand_overlap(world, obj_id, tol=-0.0005):
     """Deepest penetration (m, <=0) of the object into any hand body; 0 if clear."""
     depth = 0.0
     for body, dist in world.object_contacts(obj_id, tol):
-        if world.m.body(body).name.startswith("right_"):
+        if world.m.body(body).name.startswith(f"{C.HAND_SIDE}_"):
             depth = min(depth, dist)
     return depth
 

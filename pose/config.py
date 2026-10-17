@@ -28,7 +28,7 @@ LABEL_TO_OBJECT = {"A": "vegabar29", "B": "vegabar38"}
 # Download the WHOLE folder (urdf + meshes/) from
 # https://github.com/dexsuite/dex-urdf  ->  robots/hands/inspire_hand/
 # PLACEHOLDER: set HAND_SIDE to the hand you actually used ("right" or "left").
-HAND_SIDE = "right"
+HAND_SIDE = "left"                    # the right hand is out of service since 2026-10-17 afternoon
 HAND_URDF = ROOT / "inspire_hand" / f"inspire_hand_{HAND_SIDE}.urdf"
 
 

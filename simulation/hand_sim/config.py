@@ -1,28 +1,32 @@
+import os
 from pathlib import Path
 
 SIM_DIR = Path(__file__).resolve().parent.parent
-HAND_XML = SIM_DIR / "Inspire_hand" / "xml" / "inspire_hand_right.xml"
+# Which hand to simulate. "left" is built by mirroring the right-hand model (hand_sim/left_hand.py).
+# Override per run with the environment variable HAND_SIDE=right.
+HAND_SIDE = os.environ.get("HAND_SIDE", "left")
+HAND_XML = SIM_DIR / "Inspire_hand" / "xml" / "inspire_hand_right.xml"  # source model (right)
 CAD_DIR = SIM_DIR / "assets"
 OBJECTS_DIR = SIM_DIR / "objects"
 
 # DOF order of the real hand registers (ANGLE_SET(0..5) etc.) and of models/dataset.
 DOF_NAMES = ["little", "ring", "middle", "index", "thumb_bend", "thumb_rot"]
 DOF_JOINTS = [
-    "right_pinky_proximal_joint",
-    "right_ring_proximal_joint",
-    "right_middle_proximal_joint",
-    "right_index_proximal_joint",
-    "right_thumb_proximal_pitch_joint",
-    "right_thumb_proximal_yaw_joint",
+    f"{HAND_SIDE}_pinky_proximal_joint",
+    f"{HAND_SIDE}_ring_proximal_joint",
+    f"{HAND_SIDE}_middle_proximal_joint",
+    f"{HAND_SIDE}_index_proximal_joint",
+    f"{HAND_SIDE}_thumb_proximal_pitch_joint",
+    f"{HAND_SIDE}_thumb_proximal_yaw_joint",
 ]
 # Body whose tip defines the lever arm used to convert actuator torque to fingertip force (grams).
 DOF_TIP_BODIES = [
-    "right_pinky_intermediate",
-    "right_ring_intermediate",
-    "right_middle_intermediate",
-    "right_index_intermediate",
-    "right_thumb_distal",
-    "right_thumb_distal",
+    f"{HAND_SIDE}_pinky_intermediate",
+    f"{HAND_SIDE}_ring_intermediate",
+    f"{HAND_SIDE}_middle_intermediate",
+    f"{HAND_SIDE}_index_intermediate",
+    f"{HAND_SIDE}_thumb_distal",
+    f"{HAND_SIDE}_thumb_distal",
 ]
 
 # Hand register limits (docs/internal/hand_manual.pdf, section 2.6).
@@ -89,3 +93,27 @@ SUCCESS_MAX_ROT_RAD = 0.26
 
 # Pre-grasp posture: fingers open, thumb rotated into opposition (ANGLE_SET order = DOF_NAMES).
 PRESHAPE_ANGLES = [1000, 1000, 1000, 1000, 1000, 0]
+
+
+def _mirror_object_defaults():
+    """Left hand: the hand is mirrored across the plane y = hand-root y, so are the default grasp poses.
+    A mirrored pose S R is not a rotation; the sensors are mirror-symmetric about their own x-y plane
+    (long axis y, the VEGABAR 38 shaft offset along x), so S R M with M = diag(1, 1, -1) is the proper
+    rotation that puts the same geometry in the mirrored place."""
+    import numpy as np
+    from scipy.spatial.transform import Rotation
+
+    y0 = 0.1  # right_hand_root / left_hand_root position in the scene
+    S, M = np.diag([1.0, -1.0, 1.0]), np.diag([1.0, 1.0, -1.0])
+    for cfg in OBJECTS.values():
+        cfg["grasp_pos"][1] = 2 * y0 - cfg["grasp_pos"][1]
+        w, x, y, z = cfg["grasp_quat"]
+        R = S @ Rotation.from_quat([x, y, z, w]).as_matrix() @ M
+        x, y, z, w = Rotation.from_matrix(R).as_quat()
+        cfg["grasp_quat"] = [float(w), float(x), float(y), float(z)]
+        lo, hi = cfg["offset_range"][1]
+        cfg["offset_range"][1] = [-hi, -lo]
+
+
+if HAND_SIDE == "left":
+    _mirror_object_defaults()
