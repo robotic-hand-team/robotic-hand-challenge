@@ -151,6 +151,8 @@ class HandController:
         )
         return {
             "angle_set": self.angle_set.copy(),
+            "force_set": self.force_set.copy(),
+            "speed_set": self.speed_set.copy(),
             "angle_act": angle_act,
             "force_act": np.clip(force_act, -4000, 4000),
             "current": np.clip(current, 0, 2000),

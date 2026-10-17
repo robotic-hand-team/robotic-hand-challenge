@@ -16,7 +16,7 @@ from . import config as C
 from .policy import PHASE_APPROACH, PHASE_GRASP, PHASE_HOLD, Action, Observation, Policy, ScriptedGraspPolicy
 from .world import World
 
-MAX_SAMPLE_TRIES = 50
+MAX_SAMPLE_TRIES = 80
 PATH_CHECK_POINTS = 12
 PENETRATION_TOL_M = -0.001
 DROP_SHIFT_M = 0.05
@@ -50,10 +50,14 @@ def _smoothstep(x):
 
 
 class HandoverEpisode:
-    def __init__(self, world: World, policy: Policy, rng: np.random.Generator, obj_id: str | None = None, on_frame=None):
+    def __init__(self, world: World, policy: Policy, rng: np.random.Generator, obj_id: str | None = None,
+                 on_frame=None, step_fn=None, randomize: bool = True):
         self.world, self.policy, self.rng = world, policy, rng
+        self.step_fn = step_fn or (lambda n: world.step(n))  # the viewer substitutes a locking/pacing stepper
         self.obj_id = obj_id or str(rng.choice(list(C.OBJECTS)))
+        self.randomize = randomize  # False: start exactly at the object's nominal grasp_pos/grasp_quat
         self.on_frame = on_frame  # callable(episode, Observation) once per control tick (recorder hook)
+        self._forced = False
         self.substeps = round(1.0 / (C.CONTROL_HZ * world.m.opt.timestep))
         self.done = False
         self.result: dict | None = None
@@ -71,10 +75,15 @@ class HandoverEpisode:
         tilt_z = self.rng.uniform(*C.TILT_Z_RANGE_RAD)
         offset = np.array([self.rng.uniform(lo, hi) for lo, hi in cfg["offset_range"]])
         quat = _qmul(_qmul(_quat([0, 0, 1], tilt_z), _quat([1, 0, 0], tilt_x)), _qmul(q_nom, _quat([0, 1, 0], roll)))
+        # Occasional extreme orientations (edge cases).
+        if self.rng.random() < 0.2:
+            quat = _qmul(_quat([1, 0, 0], np.pi), quat)  # flipped end-over-end
+        if self.rng.random() < 0.2:
+            quat = _qmul(_quat([0, 0, 1], np.pi), quat)  # mirrored across palm midplane
         pivot_world = pivot_nom + offset
         pos = pivot_world - _rotate(quat, pivot)
 
-        direction = np.array([self.rng.uniform(0.0, 0.6), self.rng.uniform(-0.6, 0.6), 1.0])
+        direction = np.array([self.rng.uniform(-0.3, 0.8), self.rng.uniform(-0.8, 0.8), 0.5])
         direction /= np.linalg.norm(direction)
         info = {
             "roll_rad": roll,
@@ -96,12 +105,18 @@ class HandoverEpisode:
         w = self.world
         w.reset(C.PRESHAPE_ANGLES)
         w.active = self.obj_id
-        for tries in range(1, MAX_SAMPLE_TRIES + 1):
-            target, quat, start, info = self._sample_target()
-            if self._path_clear(start, target, quat):
-                break
+        if self.randomize:
+            for tries in range(1, MAX_SAMPLE_TRIES + 1):
+                target, quat, start, info = self._sample_target()
+                if self._path_clear(start, target, quat):
+                    break
+            else:
+                raise RuntimeError(f"no collision-free handover found for {self.obj_id} in {MAX_SAMPLE_TRIES} tries")
         else:
-            raise RuntimeError(f"no collision-free handover found for {self.obj_id} in {MAX_SAMPLE_TRIES} tries")
+            cfg = C.OBJECTS[self.obj_id]
+            target, quat, start = np.array(cfg["grasp_pos"]), np.array(cfg["grasp_quat"]), np.array(cfg["grasp_pos"])
+            tries, info = 0, {"roll_rad": 0.0, "tilt_x_rad": 0.0, "tilt_z_rad": 0.0,
+                               "pivot_offset_m": [0.0, 0.0, 0.0], "approach_dir": [0.0, 0.0, 1.0]}
         self.target_pos, self.target_quat, self.start_pos = target, quat, start
         w.place(self.obj_id, start, quat)
         self.info = {"object": self.obj_id, "sample_tries": tries, "target_pos": target.tolist(),
@@ -118,8 +133,13 @@ class HandoverEpisode:
         return self.world.d.time - self.t0
 
     def observation(self) -> Observation:
+        raw = self.world.tactile.step(self.world.d)
+        summary = self.world.tactile.summary(raw)
+        pos, _ = self.world.object_pose(self.obj_id)
+        palm_id = self.world.m.body("right_hand_root").id
+        proximity = float(np.linalg.norm(pos - self.world.d.xpos[palm_id]))
         return Observation(t=self.t, phase=self.phase, phase_t=self.world.d.time - self.phase_t0,
-                           registers=self.world.hand.read())
+                           registers=self.world.hand.read(), tactile=summary, proximity=proximity)
 
     def _apply(self, action: Action):
         hand = self.world.hand
@@ -161,7 +181,7 @@ class HandoverEpisode:
                 w.move_carrier(self.obj_id, self.start_pos + (self.target_pos - self.start_pos) * s)
             elif self.phase == PHASE_HOLD:
                 w.set_support(1.0 - _smoothstep((w.d.time - self.phase_t0) / C.RELEASE_RAMP_S))
-            w.step()
+            self.step_fn(1)
 
         phase_t = w.d.time - self.phase_t0
         if self.phase == PHASE_APPROACH and phase_t >= C.APPROACH_TIME_S:
