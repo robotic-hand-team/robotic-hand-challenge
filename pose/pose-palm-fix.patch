@@ -1,0 +1,151 @@
+diff --git a/pose/config.py b/pose/config.py
+index 15e689f..1b78e31 100644
+--- a/pose/config.py
++++ b/pose/config.py
+@@ -87,8 +87,13 @@ FINGER_LINKS = {
+                "distal": "thumb_distal"},
+ }
+ # Palm patch, in hand_base_link coordinates (metres). PLACEHOLDER.
+-PALM_LENGTH_RANGE = (-0.035, -0.125)   # palm row 0 near the wrist (matched to ground-truth photo of 20261016_204513)
++# Palm patch along the fingers (row 0 near the wrist). Equal taxel pitch with the 14 taxels across
++# (~5 mm): 8 taxels ~ 36 mm. Centre at y = -80 mm chosen against 13 photo-labelled grasps (pose/eval).
++PALM_LENGTH_RANGE = (-0.062, -0.098)
+ PALM_WIDTH_RANGE = (-0.036, 0.030)     # across the palm, index side to little side
++# The palm's raw values are a 14 x 8 grid (logged as 8 x 14); see data_io.palm_grid.
++PALM_FIX_LAYOUT = True
++PALM_FLIP_ALONG = False                 # direction of the 8-taxel axis (fingers <-> wrist), set from photo labels
+ 
+ # --- Fitting --------------------------------------------------------------
+ N_ORIENTATION_STARTS = 6
+diff --git a/pose/data_io.py b/pose/data_io.py
+index 97af020..854b4de 100644
+--- a/pose/data_io.py
++++ b/pose/data_io.py
+@@ -4,6 +4,8 @@ from dataclasses import dataclass
+ from pathlib import Path
+ 
+ import numpy as np
++
++import config as C
+ import pandas as pd
+ 
+ 
+@@ -20,9 +22,22 @@ class Session:
+         key = group["name"].lower().replace(" ", "_")
+         cols = [f"{key}_r{r}_c{c}" for r in range(group["rows"]) for c in range(group["cols"])]
+         vals = self.tactile.loc[frames, cols].to_numpy(float).mean(0)
++        if group["name"] == "Palm" and C.PALM_FIX_LAYOUT:
++            return palm_grid(vals)
+         return vals.reshape(group["rows"], group["cols"])
+ 
+ 
++def palm_grid(vals):
++    """The logger labels the palm as 8 x 14 (r0_c0, r0_c1, ...), but the values are really a 14 x 8
++    grid: read that way, pressure patterns are coherent; read as 8 x 14 they form repeating diagonal
++    stripes. The 14-taxel direction runs across the palm, row 0 at the little finger (the heavy
++    VEGABAR 38 head presses rows 0-4 when it lies on the little-finger side, rows 9-13 at the thumb).
++    Returned as 8 x 14 (along the fingers x across the palm, thumb side first) to match
++    hand_model._palm_patch, which spans PALM_LENGTH_RANGE x PALM_WIDTH_RANGE."""
++    g = np.asarray(vals, float).reshape(14, 8)[::-1, :].T     # -> 8 x 14, column 0 = thumb side
++    return g[::-1, :] if C.PALM_FLIP_ALONG else g
++
++
+ def load_session(folder: Path) -> Session:
+     folder = Path(folder)
+     meta = json.loads((folder / "meta.json").read_text())
+diff --git a/pose/eval/evaluate.py b/pose/eval/evaluate.py
+new file mode 100644
+index 0000000..aec1b91
+--- /dev/null
++++ b/pose/eval/evaluate.py
+@@ -0,0 +1,56 @@
++"""Score the pose fit against the photo-labelled real grasps in labels.py.
++
++Fits every labelled session (no axis hint) with the current pose/ settings and compares the
++direction of the sensor's CAD +y end with the photo. Takes ~1 min per session.
++
++Usage (from pose/):  python eval/evaluate.py            # all labelled sessions
++                     python eval/evaluate.py 20261016_204637 20261016_204609
++"""
++import sys
++from pathlib import Path
++
++import numpy as np
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
++sys.path.insert(0, str(Path(__file__).resolve().parent))
++import config as C  # noqa: E402
++from contacts import extract_contacts  # noqa: E402
++from data_io import hold_window, joint_raw, load_session  # noqa: E402
++from hand_model import HandModel  # noqa: E402
++from labels import LABELS, end_dir  # noqa: E402
++from pose_fit import ObjectModel, fit_pose  # noqa: E402
++from run_pipeline import hand_surface_points  # noqa: E402
++
++
++def family(v):
++    a = np.degrees(np.arctan2(abs(v[1]), abs(v[2])))  # 0 = across the palm, 90 = along the fingers
++    return "across" if a < 30 else "along" if a > 60 else "diagonal"
++
++
++def main():
++    sessions = sys.argv[1:] or list(LABELS)
++    hand, objs, rows = HandModel(), {}, []
++    print(f"{'session':16s} {'sensor':9s} {'photo':9s} {'fit':9s} {'end dir err':>11s} {'axis err':>8s} {'rms':>5s}")
++    for sess in sessions:
++        name, _, note = LABELS[sess]
++        obj = objs.setdefault(name, ObjectModel(C.OBJECTS[name], name))
++        s = load_session(C.LOG_DIR / sess)
++        fr = hold_window(s)
++        hand.set_raw(joint_raw(s, fr))
++        cs, _ = extract_contacts(s, fr, hand)
++        m = hand.posed_meshes()
++        f = fit_pose(obj, cs, hand_surface_points(m), axis_hint=None, check_points=hand_surface_points(m, 600))
++        d = (f.T @ obj.cad_to_obj)[:3, 1]                       # CAD +y end in the hand frame
++        p = np.array([0, d[1], d[2]]) / (np.hypot(d[1], d[2]) + 1e-9)
++        signed = np.degrees(np.arccos(np.clip(p @ end_dir(sess), -1, 1)))
++        unsigned = min(signed, 180 - signed)
++        rows.append((signed, unsigned))
++        print(f"{sess:16s} {name:9s} {family(end_dir(sess)):9s} {family(p):9s} {signed:11.0f} {unsigned:8.0f} {f.rms_mm:5.1f}",
++              flush=True)
++    s_, u_ = np.array(rows).T
++    print(f"\naxis error (either end): median {np.median(u_):.0f} deg, within 20 deg: {(u_ <= 20).sum()}/{len(u_)}")
++    print(f"end direction right (within 45 deg): {(s_ <= 45).sum()}/{len(s_)}, flipped (>135 deg): {(s_ >= 135).sum()}/{len(s_)}")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/pose/eval/labels.py b/pose/eval/labels.py
+new file mode 100644
+index 0000000..5a5ac1a
+--- /dev/null
++++ b/pose/eval/labels.py
+@@ -0,0 +1,28 @@
++"""Photo labels for 13 real grasps (front-view photos from the session videos, 2026-10-17).
++
++Frame: hand_base_link (URDF), as used by pose/. +z = little-finger side, -z = thumb side,
++-y = toward the fingertips ("up" in the photos), +y = toward the wrist, -x = out of the palm.
++end_dir: direction of the sensor's CAD +y end, read from the photo (in-palm-plane only):
++  VEGABAR 29: yellow electrical end (the other end has thread, hex and green O-ring)
++  VEGABAR 38: yellow head (the other end is the steel shaft with the white cap)
++Uncertainty of a photo reading: roughly +-15 deg.
++"""
++import numpy as np
++LABELS = {
++    "20261016_204315": ("vegabar29", [0, -0.09, -1.0], "across; O-ring end out on the little side"),
++    "20261016_204344": ("vegabar29", [0, 0.0, 1.0], "across, level; yellow end out on the little side"),
++    "20261016_204402": ("vegabar29", [0, 0.42, 0.91], "across, tilted ~25 deg; yellow end little side, lower"),
++    "20261016_204429": ("vegabar29", [0, -0.87, -0.5], "diagonal ~30 deg; O-ring end down past the palm"),
++    "20261016_204457": ("vegabar29", [0, -1.0, 0.0], "along, vertical; O-ring end down"),
++    "20261016_204513": ("vegabar29", [0, 1.0, 0.0], "along, vertical; yellow end down"),
++    "20261016_204524": ("vegabar29", [0, -0.71, -0.71], "diagonal ~45 deg; O-ring end low on the little side"),
++    "20261016_204558": ("vegabar38", [0, 0.0, -1.0], "across; head at the thumb (thumb on it)"),
++    "20261016_204609": ("vegabar38", [0, -1.0, 0.0], "along, vertical; head up"),
++    "20261016_204619": ("vegabar38", [0, 0.0, 1.0], "across, level; head out on the little side"),
++    "20261016_204627": ("vegabar38", [0, 0.5, -0.87], "diagonal ~30 deg; head low on the thumb side"),
++    "20261016_204637": ("vegabar38", [0, 0.0, -1.0], "across; head at the thumb"),
++    "20261016_204649": ("vegabar38", [0, -0.97, 0.26], "along, ~15 deg; head up"),
++}
++def end_dir(sess):
++    v = np.array(LABELS[sess][1], float)
++    return v / np.linalg.norm(v)

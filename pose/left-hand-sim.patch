@@ -1,0 +1,317 @@
+diff --git a/pose/config.py b/pose/config.py
+index 4464405..f3e6cba 100644
+--- a/pose/config.py
++++ b/pose/config.py
+@@ -28,7 +28,7 @@ LABEL_TO_OBJECT = {"A": "vegabar29", "B": "vegabar38"}
+ # Download the WHOLE folder (urdf + meshes/) from
+ # https://github.com/dexsuite/dex-urdf  ->  robots/hands/inspire_hand/
+ # PLACEHOLDER: set HAND_SIDE to the hand you actually used ("right" or "left").
+-HAND_SIDE = "right"
++HAND_SIDE = "left"                    # the right hand is out of service since 2026-10-17 afternoon
+ HAND_URDF = ROOT / "inspire_hand" / f"inspire_hand_{HAND_SIDE}.urdf"
+ 
+ 
+diff --git a/pose/eval/evaluate.py b/pose/eval/evaluate.py
+index aec1b91..5ea6841 100644
+--- a/pose/eval/evaluate.py
++++ b/pose/eval/evaluate.py
+@@ -29,6 +29,7 @@ def family(v):
+ 
+ def main():
+     sessions = sys.argv[1:] or list(LABELS)
++    C.set_hand("right")  # the 13 labelled grasps (2026-10-16) were recorded with the right hand
+     hand, objs, rows = HandModel(), {}, []
+     print(f"{'session':16s} {'sensor':9s} {'photo':9s} {'fit':9s} {'end dir err':>11s} {'axis err':>8s} {'rms':>5s}")
+     for sess in sessions:
+diff --git a/simulation/hand_sim/config.py b/simulation/hand_sim/config.py
+index 5082ad3..462c060 100644
+--- a/simulation/hand_sim/config.py
++++ b/simulation/hand_sim/config.py
+@@ -1,28 +1,32 @@
++import os
+ from pathlib import Path
+ 
+ SIM_DIR = Path(__file__).resolve().parent.parent
+-HAND_XML = SIM_DIR / "Inspire_hand" / "xml" / "inspire_hand_right.xml"
++# Which hand to simulate. "left" is built by mirroring the right-hand model (hand_sim/left_hand.py).
++# Override per run with the environment variable HAND_SIDE=right.
++HAND_SIDE = os.environ.get("HAND_SIDE", "left")
++HAND_XML = SIM_DIR / "Inspire_hand" / "xml" / "inspire_hand_right.xml"  # source model (right)
+ CAD_DIR = SIM_DIR / "assets"
+ OBJECTS_DIR = SIM_DIR / "objects"
+ 
+ # DOF order of the real hand registers (ANGLE_SET(0..5) etc.) and of models/dataset.
+ DOF_NAMES = ["little", "ring", "middle", "index", "thumb_bend", "thumb_rot"]
+ DOF_JOINTS = [
+-    "right_pinky_proximal_joint",
+-    "right_ring_proximal_joint",
+-    "right_middle_proximal_joint",
+-    "right_index_proximal_joint",
+-    "right_thumb_proximal_pitch_joint",
+-    "right_thumb_proximal_yaw_joint",
++    f"{HAND_SIDE}_pinky_proximal_joint",
++    f"{HAND_SIDE}_ring_proximal_joint",
++    f"{HAND_SIDE}_middle_proximal_joint",
++    f"{HAND_SIDE}_index_proximal_joint",
++    f"{HAND_SIDE}_thumb_proximal_pitch_joint",
++    f"{HAND_SIDE}_thumb_proximal_yaw_joint",
+ ]
+ # Body whose tip defines the lever arm used to convert actuator torque to fingertip force (grams).
+ DOF_TIP_BODIES = [
+-    "right_pinky_intermediate",
+-    "right_ring_intermediate",
+-    "right_middle_intermediate",
+-    "right_index_intermediate",
+-    "right_thumb_distal",
+-    "right_thumb_distal",
++    f"{HAND_SIDE}_pinky_intermediate",
++    f"{HAND_SIDE}_ring_intermediate",
++    f"{HAND_SIDE}_middle_intermediate",
++    f"{HAND_SIDE}_index_intermediate",
++    f"{HAND_SIDE}_thumb_distal",
++    f"{HAND_SIDE}_thumb_distal",
+ ]
+ 
+ # Hand register limits (docs/internal/hand_manual.pdf, section 2.6).
+@@ -89,3 +93,27 @@ SUCCESS_MAX_ROT_RAD = 0.26
+ 
+ # Pre-grasp posture: fingers open, thumb rotated into opposition (ANGLE_SET order = DOF_NAMES).
+ PRESHAPE_ANGLES = [1000, 1000, 1000, 1000, 1000, 0]
++
++
++def _mirror_object_defaults():
++    """Left hand: the hand is mirrored across the plane y = hand-root y, so are the default grasp poses.
++    A mirrored pose S R is not a rotation; the sensors are mirror-symmetric about their own x-y plane
++    (long axis y, the VEGABAR 38 shaft offset along x), so S R M with M = diag(1, 1, -1) is the proper
++    rotation that puts the same geometry in the mirrored place."""
++    import numpy as np
++    from scipy.spatial.transform import Rotation
++
++    y0 = 0.1  # right_hand_root / left_hand_root position in the scene
++    S, M = np.diag([1.0, -1.0, 1.0]), np.diag([1.0, 1.0, -1.0])
++    for cfg in OBJECTS.values():
++        cfg["grasp_pos"][1] = 2 * y0 - cfg["grasp_pos"][1]
++        w, x, y, z = cfg["grasp_quat"]
++        R = S @ Rotation.from_quat([x, y, z, w]).as_matrix() @ M
++        x, y, z, w = Rotation.from_matrix(R).as_quat()
++        cfg["grasp_quat"] = [float(w), float(x), float(y), float(z)]
++        lo, hi = cfg["offset_range"][1]
++        cfg["offset_range"][1] = [-hi, -lo]
++
++
++if HAND_SIDE == "left":
++    _mirror_object_defaults()
+diff --git a/simulation/hand_sim/episode.py b/simulation/hand_sim/episode.py
+index 1fe8fb3..1a2e140 100644
+--- a/simulation/hand_sim/episode.py
++++ b/simulation/hand_sim/episode.py
+@@ -178,7 +178,7 @@ class HandoverEpisode:
+         rot = _quat_angle(quat0, quat1)
+         contacts = self.world.object_contacts(self.obj_id, min_dist=0.0005)
+         floor = any(b == 0 for b, _ in contacts)
+-        hand_bodies = {b for b, _ in contacts if self.world.m.body(b).name.startswith("right_")}
++        hand_bodies = {b for b, _ in contacts if self.world.m.body(b).name.startswith(f"{C.HAND_SIDE}_")}
+         if floor or shift > DROP_SHIFT_M:
+             failure = "dropped"
+         elif shift > C.SUCCESS_MAX_SHIFT_M:
+diff --git a/simulation/hand_sim/left_hand.py b/simulation/hand_sim/left_hand.py
+new file mode 100644
+index 0000000..b8386ae
+--- /dev/null
++++ b/simulation/hand_sim/left_hand.py
+@@ -0,0 +1,114 @@
++"""Build the LEFT Inspire hand from the right-hand MuJoCo model by mirroring it.
++
++The Inspire left hand is the mirror image of the right one: the left URDF (pose/inspire_hand) has the
++same links, joints and limits, with the thumb on the other side. Here the right model is reflected
++across the plane through the hand root that separates thumb side and little-finger side (sim y -> -y,
++S = diag(1, -1, 1)):
++
++  body / geom / joint / inertial positions:  p -> S p
++  orientations:                              R -> S R S       (quaternion w,x,y,z -> w,-x,y,-z)
++  hinge axes:                                a -> -S a         (S R(a, t) S = R(-S a, t): same joint
++                                                                  angle = same flexion, mirrored)
++  mesh vertices:                             v -> S v, faces re-wound so normals still point out
++  names:                                     right_* -> left_*
++
++Checked against pose/inspire_hand/inspire_hand_left.urdf by test_left_hand() below.
++"""
++from pathlib import Path
++
++import mujoco
++import numpy as np
++import trimesh
++
++S = np.diag([1.0, -1.0, 1.0])
++
++
++def _mq(q):
++    w, x, y, z = q
++    return [w, -x, y, -z]
++
++
++def _mp(p):
++    return [p[0], -p[1], p[2]]
++
++
++def mirror_spec(spec: mujoco.MjSpec, xml_dir: Path, src: str = "right", dst: str = "left") -> None:
++    """Mirror every `src_*` element of the spec in place and rename it `dst_*`."""
++    root = next(b for b in spec.bodies if b.name == f"{src}_hand_root")
++    hand_bodies = [b for b in spec.bodies if b.name.startswith(f"{src}_")]
++    for b in hand_bodies:
++        if b is not root:  # the root keeps its world pose; everything in its frame is mirrored
++            b.pos, b.quat = _mp(b.pos), _mq(b.quat)
++        b.ipos, b.iquat = _mp(b.ipos), _mq(b.iquat)
++        for g in b.geoms:
++            g.pos, g.quat = _mp(g.pos), _mq(g.quat)
++            if g.name.startswith(f"{src}_"):
++                g.name = dst + g.name[len(src):]
++            if g.meshname.startswith(f"{src}_"):
++                g.meshname = dst + g.meshname[len(src):]
++        for j in b.joints:
++            j.pos = _mp(j.pos)
++            j.axis = list(-(S @ np.asarray(j.axis, float)))
++            j.name = dst + j.name[len(src):]
++        b.name = dst + b.name[len(src):]
++
++    for m in spec.meshes:
++        if not m.name.startswith(f"{src}_"):
++            continue
++        mesh = trimesh.load(xml_dir / m.file, force="mesh", process=False)
++        v = np.asarray(mesh.vertices, float) * np.asarray(m.scale, float)
++        v[:, 1] *= -1
++        m.file = ""
++        m.scale = [1.0, 1.0, 1.0]
++        m.uservert = v.ravel().tolist()
++        m.userface = np.asarray(mesh.faces)[:, ::-1].ravel().tolist()  # reflection flips winding
++        m.name = dst + m.name[len(src):]
++
++    for e in spec.equalities:
++        e.name1 = e.name1.replace(f"{src}_", f"{dst}_", 1)
++        e.name2 = e.name2.replace(f"{src}_", f"{dst}_", 1)
++    for a in list(spec.actuators):  # hand_sim.scene replaces the actuators anyway
++        spec.delete(a)
++
++
++def test_left_hand(n_poses: int = 5, seed: int = 0) -> float:
++    """Max distance (m) between the mirrored model's link origins and the left URDF's, over random
++    joint angles. Run from simulation/:  python -m hand_sim.left_hand"""
++    import yourdfpy
++    from scipy.spatial.transform import Rotation
++
++    sim_dir = Path(__file__).resolve().parents[1]
++    xml = sim_dir / "Inspire_hand" / "xml" / "scene.xml"
++    spec = mujoco.MjSpec.from_file(str(xml))
++    mirror_spec(spec, xml.parent)
++    m = spec.compile()
++    d = mujoco.MjData(m)
++    urdf = yourdfpy.URDF.load(str(sim_dir.parent / "pose" / "inspire_hand" / "inspire_hand_left.urdf"))
++    R_base_hbl = Rotation.from_euler("xyz", [-1.5707963, 0, 3.14159]).as_matrix()
++    root = m.body("left_hand_root").id
++    rng = np.random.default_rng(seed)
++    worst = 0.0
++    for _ in range(n_poses):
++        cfg = {}
++        for jn in urdf.actuated_joint_names:
++            lim = urdf.joint_map[jn].limit
++            cfg[jn] = rng.uniform(lim.lower, lim.upper)
++        urdf.update_cfg(cfg)
++        mujoco.mj_resetData(m, d)
++        for jn, q in zip(urdf.actuated_joint_names, urdf.cfg):
++            d.qpos[m.jnt_qposadr[m.joint(f"left_{jn}").id]] = q
++        for e in range(m.neq):  # coupled joints, as in the URDF mimic tags
++            j1, j2 = m.eq_obj1id[e], m.eq_obj2id[e]
++            c = m.eq_data[e][:5]
++            q2 = d.qpos[m.jnt_qposadr[j2]]
++            d.qpos[m.jnt_qposadr[j1]] = c[0] + c[1] * q2
++        mujoco.mj_forward(m, d)
++        for link in ["thumb_distal", "index_intermediate", "pinky_intermediate", "middle_proximal"]:
++            p_urdf = urdf.get_transform(link, "base")[:3, 3]          # URDF 'base' = sim hand root frame
++            p_sim = d.xmat[root].reshape(3, 3).T @ (d.xpos[m.body(f"left_{link}").id] - d.xpos[root])
++            worst = max(worst, float(np.linalg.norm(p_urdf - p_sim)))
++    return worst
++
++
++if __name__ == "__main__":
++    print(f"left hand vs left URDF: max link position error {test_left_hand() * 1000:.3f} mm")
+diff --git a/simulation/hand_sim/pose_import.py b/simulation/hand_sim/pose_import.py
+index 1eabe5a..a458171 100644
+--- a/simulation/hand_sim/pose_import.py
++++ b/simulation/hand_sim/pose_import.py
+@@ -15,7 +15,7 @@ from scipy.spatial.transform import Rotation
+ 
+ from . import config as C
+ 
+-HAND_ROOT_BODY = "right_hand_root"
++HAND_ROOT_BODY = f"{C.HAND_SIDE}_hand_root"
+ # URDF fixed joint base -> hand_base_link: rpy="-1.57079 0 3.14159" (same in pose/ and simulation/ URDF).
+ R_BASE_HBL = Rotation.from_euler("xyz", [-1.57079, 0.0, 3.14159]).as_matrix()
+ 
+@@ -37,14 +37,13 @@ def hand_base_link_in_world(m, d) -> np.ndarray:
+ 
+ def load(path) -> dict:
+     est = json.loads(Path(path).read_text())
+-    if est.get("hand") == "left":
+-        # The simulation only has the right hand. The left URDF is the right one mirrored across the
+-        # palm (hand_base_link z -> -z), so the mirror image of a left-hand grasp is a valid right-hand
+-        # grasp with the same joint angles. S T S keeps the rotation proper; the sensor is shown with
+-        # its CAD z mirrored, which for these near-axisymmetric sensors looks the same.
++    if est.get("hand", "right") != C.HAND_SIDE:
++        # Estimate from the other hand than the one simulated (set HAND_SIDE to match, or accept a
++        # mirror view): the hands are mirror images across the palm (hand_base_link z -> -z), so the
++        # mirrored grasp is valid with the same joint angles. S T S keeps the rotation proper.
+         S = np.diag([1.0, 1.0, -1.0, 1.0])
+         est["T_hand_cad"] = (S @ np.array(est["T_hand_cad"]) @ S).tolist()
+-        est["status"] = f"{est['status']} (left hand, shown mirrored)"
++        est["status"] = f"{est['status']} ({est.get('hand', 'right')}-hand estimate shown mirrored)"
+     if est["object"] not in C.OBJECTS:
+         raise KeyError(f"object {est['object']!r} not in simulation (have {list(C.OBJECTS)})")
+     return est
+@@ -125,7 +124,7 @@ def _hand_overlap(world, obj_id, tol=-0.0005):
+     """Deepest penetration (m, <=0) of the object into any hand body; 0 if clear."""
+     depth = 0.0
+     for body, dist in world.object_contacts(obj_id, tol):
+-        if world.m.body(body).name.startswith("right_"):
++        if world.m.body(body).name.startswith(f"{C.HAND_SIDE}_"):
+             depth = min(depth, dist)
+     return depth
+ 
+diff --git a/simulation/hand_sim/scene.py b/simulation/hand_sim/scene.py
+index 49645ed..cfa9d13 100644
+--- a/simulation/hand_sim/scene.py
++++ b/simulation/hand_sim/scene.py
+@@ -7,6 +7,7 @@ import numpy as np
+ import trimesh
+ 
+ from . import config as C
++from .left_hand import mirror_spec
+ 
+ SCENE_XML = C.SIM_DIR / "Inspire_hand" / "xml" / "scene.xml"
+ 
+@@ -25,7 +26,7 @@ PARK_POS = {"vegabar_29": [0.5, -0.3, 0.15], "vegabar_38": [0.5, 0.3, 0.15]}
+ 
+ 
+ def _hand_bodies(spec):
+-    return [b for b in spec.bodies if b.name.startswith("right_")]
++    return [b for b in spec.bodies if b.name.startswith(f"{C.HAND_SIDE}_")]
+ 
+ 
+ def _configure_hand(spec):
+@@ -36,7 +37,7 @@ def _configure_hand(spec):
+                 geom.condim = 4
+                 geom.friction = OBJECT_FRICTION
+     for joint in spec.joints:
+-        if joint.name.startswith("right_"):
++        if joint.name.startswith(f"{C.HAND_SIDE}_"):
+             joint.actfrclimited = False
+             joint.armature = JOINT_ARMATURE
+             joint.damping = [JOINT_DAMPING, 0.0, 0.0]
+@@ -106,6 +107,8 @@ def _add_object(spec, obj_id, pos):
+ 
+ def build_model() -> mujoco.MjModel:
+     spec = mujoco.MjSpec.from_file(str(SCENE_XML))
++    if C.HAND_SIDE == "left":
++        mirror_spec(spec, SCENE_XML.parent)
+     spec.option.timestep = 0.002
+     spec.option.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
+     spec.option.cone = mujoco.mjtCone.mjCONE_ELLIPTIC
