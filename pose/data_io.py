@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+
+import config as C
 import pandas as pd
 
 
@@ -20,7 +22,20 @@ class Session:
         key = group["name"].lower().replace(" ", "_")
         cols = [f"{key}_r{r}_c{c}" for r in range(group["rows"]) for c in range(group["cols"])]
         vals = self.tactile.loc[frames, cols].to_numpy(float).mean(0)
+        if group["name"] == "Palm" and C.PALM_FIX_LAYOUT:
+            return palm_grid(vals)
         return vals.reshape(group["rows"], group["cols"])
+
+
+def palm_grid(vals):
+    """The logger labels the palm as 8 x 14 (r0_c0, r0_c1, ...), but the values are really a 14 x 8
+    grid: read that way, pressure patterns are coherent; read as 8 x 14 they form repeating diagonal
+    stripes. The 14-taxel direction runs across the palm, row 0 at the little finger (the heavy
+    VEGABAR 38 head presses rows 0-4 when it lies on the little-finger side, rows 9-13 at the thumb).
+    Returned as 8 x 14 (along the fingers x across the palm, thumb side first) to match
+    hand_model._palm_patch, which spans PALM_LENGTH_RANGE x PALM_WIDTH_RANGE."""
+    g = np.asarray(vals, float).reshape(14, 8)[::-1, :].T     # -> 8 x 14, column 0 = thumb side
+    return g[::-1, :] if C.PALM_FLIP_ALONG else g
 
 
 def load_session(folder: Path) -> Session:
