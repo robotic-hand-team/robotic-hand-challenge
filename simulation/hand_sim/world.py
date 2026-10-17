@@ -6,6 +6,7 @@ import numpy as np
 from . import config as C
 from .hand import HandController
 from .scene import PARK_POS, build_model
+from .tactile import TactileModel
 
 
 class World:
@@ -14,6 +15,7 @@ class World:
         self.d = mujoco.MjData(self.m)
         self.rng = np.random.default_rng(seed)
         self.hand = HandController(self.m, self.d, self.rng)
+        self.tactile = TactileModel(self.m, self.rng)
         self.active = next(iter(C.OBJECTS))
         self._ids = {}
         for obj_id in C.OBJECTS:

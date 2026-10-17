@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+mujoco>=3.16
+numpy
+scipy
+pandas
+trimesh
+fast_simplification
+joblib
+scikit-learn
+xgboost

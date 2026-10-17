@@ -38,6 +38,26 @@ Run all commands from this `simulation/` folder:
 On macOS the viewer must be started with `mjpython`. Typical session: `obj vegabar_38`, `close`,
 `release`, `status`, `open`, `attach`.
 
+Automatic random handovers (an invisible carrier brings the object to a random pose near the open
+hand, a scripted policy grasps it, the carrier lets go, the hand holds alone for 2 s):
+
+```bash
+../venv/bin/mjpython -m hand_sim.run --demo             # watch it in the viewer
+../venv/bin/python -m hand_sim.episode --episodes 100    # headless, prints a success-rate summary
+../venv/bin/python -m hand_sim.test_smoke                # quick regression check (no pytest needed)
+```
+
+Generate a dataset in the same file layout as `models/dataset/<session>/` (actuators.csv,
+tactile_raw.csv, tactile_summary.csv, meta.json), plus a ground-truth `object_pose.csv` that the
+real hardware has no way to record:
+
+```bash
+../venv/bin/python -m hand_sim.recorder --episodes 20 --out ../models/dataset_sim
+```
+
+In the viewer, `tactile` prints the current tactile group readout (sum/max/contacts/centroid/force,
+same formula as the real `tactile_summary.csv`).
+
 ## URDF Source
 - URDF origin/reference: https://github.com/dexsuite/dex-urdf/tree/main?tab=readme-ov-file
 

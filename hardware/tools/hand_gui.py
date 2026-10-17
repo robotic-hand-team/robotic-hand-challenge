@@ -5,6 +5,8 @@ from PIL import Image, ImageTk
 import os
 import json
 import time
+import joblib
+from pathlib import Path
 
 # ----------------------------
 # Verbindung
@@ -19,6 +21,32 @@ client.connect()
 # Datei für Speicher
 # ----------------------------
 SAVE_FILE = "positions.json"
+
+# ----------------------------
+# Klassifizierer für Sensor A/B
+# ----------------------------
+# Der XGBoost-Klassifizierer aus classifier/ schätzt aus den Taktildaten + Ist-Winkeln,
+# welcher Sensor (A = VEGABAR 29, B = VEGABAR 38) gerade gehalten wird.
+# Modell-Variante per Umgebungsvariable wählbar:
+#   CLASSIFIER_SUFFIX=""          -> auf echten Hardware-Daten trainiert (Standard)
+#   CLASSIFIER_SUFFIX="_combined" -> real + Simulation gemischt
+#   CLASSIFIER_SUFFIX="_sim"      -> nur Simulation
+CLASSIFIER_DIR = Path(__file__).parent.parent.parent / "classifier" / "model"
+CLASSIFIER_SUFFIX = os.environ.get("CLASSIFIER_SUFFIX", "")
+CLASSIFIER_LABEL_NAMES = {0: "Sensor A (VEGA 29)", 1: "Sensor B (VEGA 38)"}
+
+CLASSIFIER_MODEL = None
+CLASSIFIER_SCALER = None
+CLASSIFIER_FEATURE_COLS = None
+
+try:
+    CLASSIFIER_MODEL = joblib.load(CLASSIFIER_DIR / f"xgb_sensor{CLASSIFIER_SUFFIX}.pkl")
+    CLASSIFIER_SCALER = joblib.load(CLASSIFIER_DIR / f"scaler{CLASSIFIER_SUFFIX}.pkl")
+    CLASSIFIER_FEATURE_COLS = joblib.load(CLASSIFIER_DIR / f"feature_cols{CLASSIFIER_SUFFIX}.pkl")
+    print(f"Klassifizierer geladen: xgb_sensor{CLASSIFIER_SUFFIX}.pkl")
+except Exception as e:
+    print(f"Klassifizierer konnte nicht geladen werden: {e}")
+    CLASSIFIER_MODEL = None
 
 # ----------------------------
 # GUI
@@ -75,8 +103,14 @@ offsets = {
     "Palm": (240, 520),
 }
 
+DOF_NAMES = ["little", "ring", "middle", "index", "thumb_bend", "thumb_rot"]
+
 pixel = 6
 sensor_offsets = {}
+
+# Zustand der Sensor-Schätzung
+prediction_votes = []      # Labels der aktiven Frames für die Mehrheitsentscheidung
+last_prediction = None     # letztes Vorhersage-Ergebnis (dict) oder None
 
 
 # ----------------------------
@@ -138,6 +172,123 @@ def step_minus():
 
 
 # ----------------------------
+# SENSOR-DATEN AUFBEREITEN
+# ----------------------------
+def read_tactile_matrices():
+    """Liest alle Taktilgruppen und liefert baseline-korrigierte, geclippte Matrizen."""
+    matrices = {}
+    for name, addr, h, w, key, rel in sensor_groups:
+        data = safe_read(addr, h * w)
+        if not data:
+            continue
+        raw = np.array(data)
+        offset = sensor_offsets.get(name, np.zeros(len(raw)))
+        matrix = (raw - offset).reshape(h, w)
+        matrix[matrix < 0] = 0
+        matrices[name] = matrix
+    return matrices
+
+
+def tactile_summary_from(matrices):
+    """Zusammenfassung je Gruppe – gleiche Logik wie die Aufnahme/Datensatz-Summary."""
+    summary = {}
+    for name, addr, h, w, key, rel in sensor_groups:
+        key_name = name.lower().replace(" ", "_")
+        matrix = matrices.get(name)
+        if matrix is None:
+            summary[key_name] = {"sum": 0, "max": 0, "contacts": 0,
+                                 "cy": 0.0, "cx": 0.0, "force": 0.0}
+            continue
+
+        active = matrix > 50
+        n_contacts = int(np.sum(active))
+        entry = {"sum": int(matrix.sum()), "max": int(matrix.max()),
+                 "contacts": n_contacts}
+        if n_contacts >= 2:
+            y_idx, x_idx = np.where(active)
+            entry["cy"] = float(np.mean(y_idx))
+            entry["cx"] = float(np.mean(x_idx))
+            entry["force"] = float(np.mean(matrix[active]))
+        else:
+            entry["cy"] = 0.0
+            entry["cx"] = 0.0
+            entry["force"] = 0.0
+        summary[key_name] = entry
+    return summary
+
+
+# ----------------------------
+# KLASSIFIZIERER-VORHERSAGE
+# ----------------------------
+def predict_sensor(summary, angles):
+    """Schätzt aus Taktil-Zusammenfassung + Ist-Winkeln den gehaltenen Sensor."""
+    global last_prediction
+
+    if CLASSIFIER_MODEL is None:
+        return None
+
+    row = {}
+    for key, s in summary.items():
+        for stat in ("sum", "max", "contacts", "cy", "cx", "force"):
+            row[f"{key}_{stat}"] = float(s[stat])
+    for n, v in zip(DOF_NAMES, angles):
+        row[f"angle_act_{n}"] = float(v)
+
+    try:
+        x = np.array([[row.get(c, 0.0) for c in CLASSIFIER_FEATURE_COLS]])
+        x_scaled = CLASSIFIER_SCALER.transform(x)
+        label = int(CLASSIFIER_MODEL.predict(x_scaled)[0])
+        confidence = float(CLASSIFIER_MODEL.predict_proba(x_scaled)[0].max())
+    except Exception as e:
+        print(f"Vorhersagefehler: {e}")
+        return None
+
+    total_contacts = sum(s["contacts"] for s in summary.values())
+    active = total_contacts > 20          # genug Kontakt für eine sinnvolle Aussage
+    if active:
+        prediction_votes.append(label)
+
+    last_prediction = {
+        "label": label,
+        "name": CLASSIFIER_LABEL_NAMES[label],
+        "confidence": confidence,
+        "active": active,
+        "contacts": total_contacts,
+    }
+    return last_prediction
+
+
+def update_prediction_display():
+    """Aktualisiert die Vorhersage-Box (Mehrheitsentscheidung über die letzten Frames)."""
+    pred = last_prediction
+
+    if CLASSIFIER_MODEL is None:
+        text, color = "Klassifizierer:\n(nicht geladen)", "#dddddd"
+    elif pred is None:
+        text, color = "Klassifizierer:\n(warten...)", "#dddddd"
+    elif not pred["active"]:
+        text, color = f"Klassifizierer:\n(warten auf Kontakt)\n{pred['name']}", "#ffeeaa"
+    else:
+        window = prediction_votes[-10:]
+        if len(window) >= 5:
+            majority = int(np.bincount(window).argmax())
+            agreement = window.count(majority) / len(window)
+            text = f"Klassifizierer:\n{CLASSIFIER_LABEL_NAMES[majority]}\n{agreement * 100:.0f}% Sicher"
+        else:
+            text = f"Klassifizierer:\n{pred['name']}\n{pred['confidence'] * 100:.0f}%"
+        color = "#aaffaa"
+
+    prediction_text.config(text=text, bg=color)
+
+
+def reset_prediction():
+    prediction_votes.clear()
+    global last_prediction
+    last_prediction = None
+    update_prediction_display()
+
+
+# ----------------------------
 # 💾 SPEICHERFUNKTION
 # ----------------------------
 def save_position():
@@ -180,20 +331,14 @@ def load_positions():
 # ----------------------------
 # VISUALISIERUNG
 # ----------------------------
-def draw():
+def draw(matrices):
     canvas.delete("all")
     canvas.create_image(350, 450, image=hand_img)
 
     for name, addr, h, w, key, rel in sensor_groups:
-        data = safe_read(addr, h * w)
-        if not data:
+        matrix = matrices.get(name)
+        if matrix is None:
             continue
-
-        raw = np.array(data)
-        offset = sensor_offsets.get(name, np.zeros(len(raw)))
-
-        matrix = (raw - offset).reshape(h, w)
-        matrix[matrix < 0] = 0
 
         x0 = offsets[key][0] + rel[0]
         y0 = offsets[key][1] + rel[1]
@@ -239,11 +384,6 @@ def draw():
             y0 + cy * pixel + size,
             fill="blue",
         )
-
-
-def loop():
-    draw()
-    root.after(120, loop)
 
 
 # ----------------------------
@@ -294,6 +434,27 @@ tk.Button(bf, text="Step +", command=step_plus).pack(side="left")
 tk.Button(bf, text="Step -", command=step_minus).pack(side="left")
 
 # ----------------------------
+# Klassifizierer-Box
+# ----------------------------
+tk.Label(left_frame, text="Sensor-Schätzung (ML)", font=("Arial", 10, "bold")).pack(pady=(20, 2))
+
+prediction_text = tk.Label(
+    left_frame,
+    text="Klassifizierer:\n(warten...)",
+    font=("Arial", 13, "bold"),
+    bg="#dddddd",
+    fg="#000000",
+    width=22,
+    height=4,
+    relief="ridge",
+    borderwidth=2,
+    justify="center",
+)
+prediction_text.pack(pady=5)
+
+tk.Button(left_frame, text="Schätzung zurücksetzen", command=reset_prediction).pack(fill="x")
+
+# ----------------------------
 # 💾 Speicher UI
 # ----------------------------
 entry = tk.Entry(left_frame)
@@ -311,6 +472,23 @@ load_positions()
 # ----------------------------
 canvas = tk.Canvas(right_frame, width=700, height=900)
 canvas.pack()
+
+
+# ----------------------------
+# HAUPTLOOP
+# ----------------------------
+def loop():
+    matrices = read_tactile_matrices()
+    draw(matrices)
+
+    summary = tactile_summary_from(matrices)
+    res = client.read_holding_registers(address=1546, count=6, device_id=1)  # angle_act
+    angles = res.registers if not res.isError() else [0] * 6
+    predict_sensor(summary, angles)
+    update_prediction_display()
+
+    root.after(120, loop)
+
 
 loop()
 root.mainloop()

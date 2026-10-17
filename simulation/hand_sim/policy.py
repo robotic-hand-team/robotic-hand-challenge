@@ -23,6 +23,7 @@ class Observation:
     phase_t: float  # seconds since the current phase started
     registers: dict  # HandController.read(): angle_set/angle_act/force_act/current/error/status (DOF order)
     tactile: dict | None = None  # filled in by the tactile model (milestone 3)
+    proximity: float = 1.0  # distance (m) from object to palm body
 
 
 @dataclass
@@ -58,15 +59,14 @@ class ScriptedGraspPolicy(Policy):
         self._last_angles = None
         self._still_since = None
         self._closing_sent = False
-        self._retightened = False
 
     def act(self, obs):
         if obs.phase == PHASE_APPROACH:
-            return Action(angle_set=C.PRESHAPE_ANGLES, force_set=[self._force] * 6)
+            return Action(angle_set=C.PRESHAPE_ANGLES, force_set=[self._force] * 4 + [1000, 200])
         if obs.phase == PHASE_GRASP:
             if not self._closing_sent:
                 self._closing_sent = True
-                return Action(angle_set=self.CLOSE_ANGLES, force_set=[self._force] * 6)
+                return Action(angle_set=self.CLOSE_ANGLES, force_set=[self._force] * 4 + [1000, 200])
             angles = np.asarray(obs.registers["angle_act"])
             if self._last_angles is not None and np.abs(angles - self._last_angles).max() <= 2:
                 self._still_since = obs.t if self._still_since is None else self._still_since
@@ -75,10 +75,6 @@ class ScriptedGraspPolicy(Policy):
             self._last_angles = angles
             settled = self._still_since is not None and obs.t - self._still_since >= self.SETTLE_S
             return Action(release=settled)
-        if obs.phase == PHASE_HOLD and not self._retightened and obs.phase_t >= C.RELEASE_RAMP_S:
-            # Re-writing ANGLE_SET clears the force stop, so the fingers squeeze again under full load.
-            self._retightened = True
-            return Action(angle_set=self.CLOSE_ANGLES)
         return Action()
 
 
