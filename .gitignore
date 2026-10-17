@@ -37,3 +37,5 @@ models/dataset/*.h5
 Thumbs.db
 pose/output/
 __pycache__/
+
+*.patch
