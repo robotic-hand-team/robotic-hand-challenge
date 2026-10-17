@@ -99,7 +99,28 @@ def run_session(name, obj, hand, outdir, axis_hint=None):
         T_hand_obj=json.dumps(np.round(fit.T, 5).tolist()),
         T_hand_cad=json.dumps(np.round(T_cad, 5).tolist()),
     )
+    export_for_sim(outdir / f"{name}.sim.json", row, T_cad, hand)
     return row
+
+
+# Pose object names -> simulation/hand_sim object ids
+SIM_OBJECT_IDS = {"vegabar29": "vegabar_29", "vegabar38": "vegabar_38"}
+
+
+def export_for_sim(path, row, T_cad, hand):
+    """Write what simulation/hand_sim needs to replay this grasp (load with `pose <file>`)."""
+    joints = {dof: float(hand.urdf.cfg[hand.urdf.actuated_joint_names.index(j)])
+              for dof, j in C.DOF_TO_JOINT.items()}
+    out = {
+        "session": row["session"],
+        "object": SIM_OBJECT_IDS.get(row["object"], row["object"]),
+        "status": row["status"],
+        "fit_rms_mm": row["fit_rms_mm"],
+        "frame": "hand_base_link",           # URDF frame, metres
+        "T_hand_cad": np.round(T_cad, 6).tolist(),   # STL vertices (mm * 0.001) -> hand frame
+        "joint_rad": joints,                  # actuated joints, keyed by DOF name
+    }
+    path.write_text(json.dumps(out, indent=2))
 
 
 def main():

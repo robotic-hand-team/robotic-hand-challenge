@@ -1,0 +1,92 @@
+diff --git a/simulation/hand_sim/pose_import.py b/simulation/hand_sim/pose_import.py
+index 65670d1..24de7bc 100644
+--- a/simulation/hand_sim/pose_import.py
++++ b/simulation/hand_sim/pose_import.py
+@@ -104,7 +104,11 @@ def report(world, est: dict, placed: dict) -> str:
+ 
+ APPROACH_S = 0.8  # sim seconds to move from the clear start pose toward the estimate
+ CLOSE_S = 1.5  # time for the fingers to close and force-stop on the object
+-HOLD_S = 0.5  # settle before the report
++HOLD_S = 0.5  # settle with the carrier still attached
++RELEASE_S = 0.3  # carrier weld off, weight handed over to the fingers over this time
++TEST_S = 1.0  # then check whether the fingers alone hold the object
++BLOCKED_LAG_M = 0.004  # approach stops when the hand holds the object back this far behind the carrier
++HELD_MAX_SHIFT_M = 0.01
+ CLEAR_MARGIN_M = 0.003
+ MAX_BACKOFF_M = 0.10
+ 
+@@ -125,8 +129,9 @@ def _rot_deg(q1, q2):
+ 
+ 
+ class GraspReplay:
+-    """Open hand -> object in the estimated orientation, clear of the hand -> slide in until it
+-    touches -> close the fingers with the object's grasp force -> settle -> report.
++    """Open hand -> object in the estimated orientation, clear of the hand -> slide in until the hand
++    blocks it -> close the fingers with the object's grasp force -> settle -> report -> let go and
++    check whether the fingers alone hold it.
+ 
+     Call update() once per viewer frame (or per step headless); it returns a message when a phase
+     finishes and sets .done at the end.
+@@ -182,20 +187,36 @@ class GraspReplay:
+         t = d.time - self.t0
+         if self.phase == "approach":
+             frac = min(1.0, t / APPROACH_S)
+-            touching = _hand_overlap(world, obj_id, tol=0.0) < 0.0
+-            if touching or frac >= 1.0:
+-                pos, _ = world.object_pose(obj_id)
+-                world.move_carrier(obj_id, pos, self.quat)  # stop where it touches
++            pos, _ = world.object_pose(obj_id)
++            carrier = world.d.mocap_pos[world._ids[obj_id]["mocap"]]
++            blocked = np.linalg.norm(carrier - pos) > BLOCKED_LAG_M and _hand_overlap(world, obj_id, 0.0) < 0
++            if blocked or frac >= 1.0:
++                world.move_carrier(obj_id, pos, self.quat)  # stop where the hand blocks it
+                 world.hand.set_angles([0, 0, 0, 0, 0, -1])  # close all, keep thumb rotation
+                 self.phase, self.t0 = "close", d.time
+                 stop = np.linalg.norm(pos - self.target_pos) * 1000
+-                return f"[pose] touched the hand {stop:.1f} mm short of the estimate; closing fingers"
++                why = "blocked by the hand" if blocked else "reached the estimate"
++                return f"[pose] {why}, {stop:.1f} mm from the estimate; closing fingers"
+             world.move_carrier(obj_id, self.start_pos + frac * (self.target_pos - self.start_pos), self.quat)
+         elif self.phase == "close" and t >= CLOSE_S:
+             self.phase, self.t0 = "hold", d.time
+         elif self.phase == "hold" and t >= HOLD_S:
++            self.grasped_pos, self.grasped_quat = world.object_pose(obj_id)
++            self.grasp_text = self.report()
++            world.release(keep_support=True)
++            self.phase, self.t0 = "release", d.time
++            return self.grasp_text + "\n[pose] letting go of the object: do the fingers hold it?"
++        elif self.phase == "release":
++            world.set_support(max(0.0, 1.0 - t / RELEASE_S))
++            if t >= RELEASE_S:
++                self.phase, self.t0 = "test", d.time
++        elif self.phase == "test" and t >= TEST_S:
+             self.done = True
+-            return self.report()
++            pos, quat = world.object_pose(obj_id)
++            shift = np.linalg.norm(pos - self.grasped_pos)
++            verdict = "HELD" if shift < HELD_MAX_SHIFT_M else "DROPPED / SLIPPED"
++            return (f"[pose] {verdict}: object moved {shift * 1000:.1f} mm and turned "
++                    f"{_rot_deg(quat, self.grasped_quat):.1f} deg after the hand took its weight")
+         return None
+ 
+     def report(self) -> str:
+@@ -212,5 +233,4 @@ class GraspReplay:
+             f"  ANGLE_ACT logged {self.logged_raw.tolist()}   (order {C.DOF_NAMES})",
+             f"  fingers touching: {', '.join(touching) or 'none'}",
+             f"  max overlap with hand: {-_hand_overlap(w, obj_id, 0.0) * 1000:.1f} mm",
+-            "  type `release` to let go and check whether the grasp holds",
+         ])
+diff --git a/simulation/hand_sim/run.py b/simulation/hand_sim/run.py
+index c038677..9697e44 100644
+--- a/simulation/hand_sim/run.py
++++ b/simulation/hand_sim/run.py
+@@ -91,7 +91,8 @@ def _handle(cmd: str, world: World) -> bool:
+         elif op == "pose":
+             est = pose_import.load(" ".join(args).strip('"'))
+             _replay["seq"] = pose_import.GraspReplay(world, est)
+-            print(f"[pose] {est['session']}: {est['object']} placed {_replay['seq'].backoff_mm:.0f} mm out of the hand, approaching")
++            print(f"[pose] {est['session']}: {est['object']} placed {_replay['seq'].backoff_mm:.0f} mm out of the hand, "
++                  "approaching (runs about 4 s; don't pause with space)")
+         elif op == "pose_raw":
+             est = pose_import.load(" ".join(args).strip('"'))
+             placed = pose_import.apply(world, est)

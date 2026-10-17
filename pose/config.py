@@ -98,6 +98,7 @@ PENETRATION_WEIGHT = 20.0
 MAX_PENETRATION_MM = 5.0     # allowed overlap with the hand (skin compression); more = rejected
 PRIOR_WEIGHT = 0.005           # weak pull of object centre toward contact centroid
 GOOD_FIT_RMS_MM = 2.0
+CONTACT_WEIGHT_FLOOR = 1.0
 
 # Rough grasp type, as a hint for the fit. Several grasps fit the contacts equally well
 # (e.g. three fingertips in a row), so this tells the fit which family to prefer.

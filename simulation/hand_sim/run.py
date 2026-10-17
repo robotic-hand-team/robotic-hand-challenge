@@ -17,6 +17,7 @@ import mujoco.viewer
 import numpy as np
 
 from . import config as C
+from . import pose_import
 from .world import World
 
 HELP = f"""commands:
@@ -30,6 +31,9 @@ HELP = f"""commands:
   release             let go of the object (gravity takes over)
   attach              put the object back at its grasp pose
   status              print the register readout
+  pose <file.json>    replay a tactile pose estimate: object in the estimated orientation, slid into the
+                      open hand until it touches, then the fingers close on it (pose/output/.../<session>.sim.json)
+  pose_raw <file>     only teleport hand and object to the raw estimate (no physics, may overlap)
   help | quit"""
 
 
@@ -46,11 +50,16 @@ def _print_status(world: World):
         print(f"  {key:10s} {r[key]}")
 
 
+_replay = {"seq": None}  # running pose_import.GraspReplay, advanced by the viewer loop
+
+
 def _handle(cmd: str, world: World) -> bool:
     parts = cmd.split()
     if not parts:
         return True
     op, args = parts[0], parts[1:]
+    if op not in ("status", "help"):
+        _replay["seq"] = None  # any other command takes over from a running replay
     hand = world.hand
     try:
         if op in ("quit", "exit"):
@@ -79,9 +88,18 @@ def _handle(cmd: str, world: World) -> bool:
             world.place(world.active, cfg["grasp_pos"], cfg["grasp_quat"])
         elif op == "status":
             _print_status(world)
+        elif op == "pose":
+            est = pose_import.load(" ".join(args).strip('"'))
+            _replay["seq"] = pose_import.GraspReplay(world, est)
+            print(f"[pose] {est['session']}: {est['object']} placed {_replay['seq'].backoff_mm:.0f} mm out of the hand, "
+                  "approaching (runs about 4 s; don't pause with space)")
+        elif op == "pose_raw":
+            est = pose_import.load(" ".join(args).strip('"'))
+            placed = pose_import.apply(world, est)
+            print(pose_import.report(world, est, placed))
         else:
             print(f"unknown command {op!r}; type help")
-    except (IndexError, ValueError, KeyError, AssertionError) as e:
+    except (IndexError, ValueError, KeyError, AssertionError, OSError) as e:
         print(f"bad command: {e}")
     return True
 
@@ -101,12 +119,15 @@ def main():
     ap.add_argument("--object", default=next(iter(C.OBJECTS)), choices=list(C.OBJECTS))
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--demo", action="store_true", help="loop grasp/release/open on all objects automatically")
+    ap.add_argument("--pose", help="start by replaying a tactile pose estimate (<session>.sim.json)")
     args = ap.parse_args()
 
     world = World(seed=args.seed)
     world.hand.set_angles(C.PRESHAPE_ANGLES)
     world.step(int(0.8 / world.m.opt.timestep))
     world.select(args.object)
+    if args.pose:
+        _handle(f"pose {args.pose}", world)
 
     commands: queue.Queue = queue.Queue()
     threading.Thread(target=_stdin_reader, args=(commands,), daemon=True).start()
@@ -145,6 +166,12 @@ def main():
                         return
             if not paused[0]:
                 with viewer.lock():
+                    if _replay["seq"]:
+                        msg = _replay["seq"].update(world)
+                        if msg:
+                            print(msg)
+                        if _replay["seq"].done:
+                            _replay["seq"] = None
                     world.step(steps_per_frame)
             viewer.sync()
             time.sleep(max(0.0, steps_per_frame * world.m.opt.timestep - (time.perf_counter() - frame_start)))

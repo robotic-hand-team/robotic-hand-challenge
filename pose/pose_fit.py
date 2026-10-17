@@ -106,7 +106,7 @@ def fit_pose(obj: ObjectModel, contacts, hand_points=None, n_random=C.N_ORIENTAT
     P = np.array([c.point for c in contacts])
     Nf = np.array([c.normal for c in contacts])
     w = np.sqrt(np.array([c.pressure for c in contacts]))
-    w = w / w.max()
+    w = np.maximum(w / w.max(), C.CONTACT_WEIGHT_FLOOR)
     centroid = (P * w[:, None]).sum(0) / w.sum()
     inward = Nf.mean(0)
     inward = inward / (np.linalg.norm(inward) + 1e-9)
