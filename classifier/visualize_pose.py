@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 import joblib
 import matplotlib
-matplotlib.use("TkAgg")          # change to "Qt5Agg" or "MacOSX" if TkAgg is absent
+matplotlib.use("MacOSX")          # native macOS backend; use "TkAgg" on Linux/Windows
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.patches import FancyArrowPatch
