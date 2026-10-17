@@ -7,6 +7,7 @@ import csv
 import json
 import time
 import signal
+import socket
 import threading
 from datetime import datetime
 
@@ -148,6 +149,15 @@ STALL_RETRIES = 3          # a stall-only fault is cleared and the move sent aga
 STALL_RETRY_WINDOW_S = 10.0  # ... within this long; one more and the hand goes FAULTY as before
                            # (logs/20261017_201853: the index flagged a stall while idle and open,
                            # stayed in status 7, and moved normally on the next command)
+
+# UDP broadcast of the real hand position: one JSON message per acquisition frame (~40 Hz)
+BROADCAST_ENABLED = True
+BROADCAST_HOST = "127.0.0.1"         # this PC only; "255.255.255.255" = every machine on the local
+BROADCAST_PORT = 5005                # network, or one receiver's IP address
+# angle 0–1000 -> degrees (manual p. 21–22; 1000 = open, linear in between):
+# fingers 0 = 20° (bent) .. 1000 = 176° (straight); thumb bend 0 = 70° .. 1000 = -13°;
+# thumb rotation 0 = 90° (opposed) .. 1000 = 165° (out to the side)
+ANGLE_DEG = [(20, 176)] * 4 + [(70, -13), (90, 165)]   # (degrees at 0, degrees at 1000)
 
 TACTILE_START = 3000       # all tactile areas are one contiguous block
 TACTILE_WORDS = 1062       # bytes 3000–5123
@@ -504,6 +514,7 @@ def acquisition_loop():
             if t - act_changed_t <= FREEZE_S:      # no decisions on frozen motor data
                 rot_guard.update(act, tactile, hand["state"])
             slip.update(act, tactile, hand["state"], hand["since"], t - act_changed_t <= FREEZE_S)
+            broadcast(t, act, t - act_changed_t > FREEZE_S)
 
             if last_t is not None:   # smoothed actual rate for the GUI
                 stats["rate_hz"] = 0.9 * stats["rate_hz"] + 0.1 / max(1e-6, t - last_t)
@@ -518,6 +529,40 @@ def acquisition_loop():
             next_t = time.perf_counter()
 
 acq_thread = threading.Thread(target=acquisition_loop, daemon=True)
+
+# ----------------------------
+# 📡 UDP BROADCAST
+# ----------------------------
+broadcast_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+broadcast_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+broadcast_sock.setblocking(False)       # never hold up the acquisition thread
+broadcast_state = {"seq": 0, "error_printed": False}
+
+def broadcast(t, act, frozen):
+    """Sends the real joint angles (0–1000 and degrees), the hand state, the slip status and
+    whether the motor data is frozen (then the angles are the last live ones) as one JSON UDP
+    datagram to BROADCAST_HOST:BROADCAST_PORT."""
+    if not BROADCAST_ENABLED:
+        return
+    angles = act["angle_act"]
+    msg = {
+        "t": round(t, 3),
+        "seq": broadcast_state["seq"],
+        "dof": DOF_KEYS,
+        "angle": angles,
+        "angle_deg": [round(d0 + (d1 - d0) * a / 1000, 1) for a, (d0, d1) in zip(angles, ANGLE_DEG)],
+        "state": hand["state"],
+        "slip": {"slipping": bool(slip.reasons), "status": slip.status, "reasons": slip.reasons},
+        "frozen": frozen,
+    }
+    broadcast_state["seq"] += 1
+    try:
+        broadcast_sock.sendto(json.dumps(msg).encode(), (BROADCAST_HOST, BROADCAST_PORT))
+        broadcast_state["error_printed"] = False
+    except OSError as e:        # no network / buffer full: skip this frame
+        if not broadcast_state["error_printed"]:
+            print(f"Broadcast to {BROADCAST_HOST}:{BROADCAST_PORT} failed: {e}")
+            broadcast_state["error_printed"] = True
 
 def start_logging():
     if not calibrated:
