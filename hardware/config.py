@@ -111,6 +111,24 @@ ROT_PUSH_S = 0.2           # current above ROT_STOP_CURRENT this long after the 
 ROT_STALL_S = 0.4          # "can't rotate further": moved at most ROT_STILL_TOL in this long, at least
 ROT_STALL_TOL = 20         # this long after its last command, and still more than this short of the
                            # target (at speed 200 it pauses up to 0.15 s between steps while moving)
+# Slip detection (HOLD only, shown in the GUI, not logged): each surface the object touches is
+# compared with how it touched once the grip has settled
+SLIP_SETTLE_S = 0.5        # settled = no finger / thumb bend moved more than SLIP_SETTLE_TOL in
+SLIP_SETTLE_TOL = 5        # this long (the index keeps creeping into the object for a median 1.8 s,
+SLIP_SETTLE_MAX_S = 3.0    # up to 6 s, after it closed); at the latest this long into HOLD
+SLIP_THRESHOLD = 100       # taxel value above baseline that counts (the pads drift up to ~90)
+SLIP_MIN_TAXELS = 5        # a contact centre needs this many such taxels (3x3 tips: never)
+SLIP_MIN_PRESSURE = 1000   # a surface is watched for a pressure drop once it carries this much (sum
+                           # of its taxels above SLIP_THRESHOLD); fingertips at 5 taxels / ~800
+                           # flickered between 4 and 5 taxels without losing pressure
+SLIP_WINDOW_S = 1.0        # contact is compared with this long ago: a slip is sudden, the grip
+                           # relaxing (fingertip pressure -60% over 4–8 s in the logs) isn't
+SLIP_SHIFT = 2.0           # contact centre moved this many taxels within SLIP_WINDOW_S -> slip
+SLIP_PRESSURE_DROP = 0.4   # surface pressure fell below this fraction within SLIP_WINDOW_S -> slip
+SLIP_ANGLE = 30            # a finger / the thumb bend pushed this far OPEN (0–1000) -> slip. Closing
+                           # further isn't: the index keeps creeping 25–250 into the object after
+                           # the grip looks finished (logs 20261017_20*); the thumb rotation is
+                           # left out, the rotation guard moves it on purpose
 TEMP_WARN_C = 60           # highlight the status readout above this motor temperature
 TEMP_VALID_MAX = 100       # manual: TEMP range is 0–100 °C, above is a corrupted reading (display only)
 
@@ -485,6 +503,7 @@ def acquisition_loop():
             logger.log(t, act, tactile)
             if t - act_changed_t <= FREEZE_S:      # no decisions on frozen motor data
                 rot_guard.update(act, tactile, hand["state"])
+            slip.update(act, tactile, hand["state"], hand["since"], t - act_changed_t <= FREEZE_S)
 
             if last_t is not None:   # smoothed actual rate for the GUI
                 stats["rate_hz"] = 0.9 * stats["rate_hz"] + 0.1 / max(1e-6, t - last_t)
@@ -963,6 +982,98 @@ class RotationGuard:
 
 rot_guard = RotationGuard()
 
+# ----------------------------
+# 🫳 SLIP DETECTION
+# ----------------------------
+# Runs in the acquisition thread on every frame (the tactile data stays live even when the motor
+# feedback freezes). Only reports – it never writes to the hand: a write while the fingers grip
+# can freeze the motor controller.
+def palm_physical(m):
+    """The palm's data is column-major and bottom-to-top (data point k = row 7 - k%8, col k//8),
+    but correct_tactile reshapes it row-major: put it back in physical order for centroids."""
+    flat = np.asarray(m).ravel()
+    out = np.zeros((8, 14))
+    k = np.arange(flat.size)
+    out[7 - k % 8, k // 8] = flat
+    return out
+
+class SlipDetector:
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.watching = False   # the grip has settled, contact is being compared
+        self.history = []       # (time, {surface: (centroid row, col, pressure)}) of SLIP_WINDOW_S
+        self.ref_angles = None  # finger angles once the grip settled
+        self.angles = []        # (time, angles) of the last SLIP_SETTLE_S, while the motors are live
+        self.reasons = []       # why it slipped (latched until the hand leaves HOLD)
+        self.status = ""        # text for the GUI
+
+    @staticmethod
+    def surface(m):
+        """(centroid, pressure) of the taxels above SLIP_THRESHOLD; the centroid (row, col) is
+        None with fewer than SLIP_MIN_TAXELS of them."""
+        w = np.where(m > SLIP_THRESHOLD, m, 0).astype(float)
+        total = w.sum()
+        if int((w > 0).sum()) < SLIP_MIN_TAXELS:
+            return None, total
+        rows, cols = np.indices(w.shape)
+        return ((rows * w).sum() / total, (cols * w).sum() / total), total
+
+    def surfaces(self, tactile):
+        out = {}
+        for name, addr, h, w, *_ in sensor_groups:
+            if h * w < 20:      # 3x3 tips: too coarse for a contact centre
+                continue
+            m = palm_physical(tactile[name]) if name == "Palm" else tactile[name]
+            out[name] = self.surface(m)
+        return out
+
+    def update(self, act, tactile, state, since, motors_live):
+        if state != "HOLD":
+            if self.watching or self.status:
+                self.reset()
+            return
+        now = time.time()
+        if not self.watching:
+            if motors_live:
+                self.angles = [(t, a) for t, a in self.angles if now - t <= SLIP_SETTLE_S]
+                self.angles.append((now, list(act["angle_act"])))
+            settled = (motors_live and now - self.angles[0][0] >= SLIP_SETTLE_S - 0.05 and
+                       all(max(a[i] for _, a in self.angles) - min(a[i] for _, a in self.angles)
+                           <= SLIP_SETTLE_TOL for i in range(5)))
+            if not settled and now - since < SLIP_SETTLE_MAX_S:
+                self.status = "grip settling..."
+                return
+            self.watching = True
+            self.ref_angles = list(act["angle_act"]) if motors_live else None
+        if self.reasons:        # latched
+            return
+        cur = self.surfaces(tactile)
+        self.history = [(t, h) for t, h in self.history if now - t <= SLIP_WINDOW_S] + [(now, cur)]
+        before = self.history[0][1]
+        held = [name for name, (_, p) in cur.items() if p >= SLIP_MIN_PRESSURE]
+        self.status = ("watching " + ", ".join(held)) if held else "no contact to watch"
+        reasons = []
+        for name, (centre0, p0) in before.items():
+            centre, p = cur[name]
+            if p0 >= SLIP_MIN_PRESSURE and p < SLIP_PRESSURE_DROP * p0:
+                reasons.append(f"{name} lost contact" if p == 0 else
+                               f"{name} pressure -{100 * (1 - p / p0):.0f}%")
+            elif centre0 is not None and centre is not None:
+                shift = ((centre[0] - centre0[0]) ** 2 + (centre[1] - centre0[1]) ** 2) ** 0.5
+                if shift > SLIP_SHIFT:
+                    reasons.append(f"{name} moved {shift:.1f} taxels")
+        if motors_live and self.ref_angles is not None:
+            for i, key in enumerate(DOF_KEYS[:5]):      # not the thumb rotation
+                if act["angle_act"][i] - self.ref_angles[i] > SLIP_ANGLE:     # pushed open
+                    reasons.append(f"{key} pushed open {act['angle_act'][i] - self.ref_angles[i]:+d}")
+        if reasons:
+            self.reasons = reasons
+            self.status = "⚠ SLIP: " + "; ".join(reasons)
+
+slip = SlipDetector()
+
 
 def update_hand_state(act, tactile):
     """Called from the GUI loop with the latest fresh frames (None if stale)."""
@@ -1110,6 +1221,8 @@ def update_hand_labels():
         auto_text = "Armed – place an object on the palm or a finger pad"
     auto_hold_label.config(text=auto_text)
     rot_label.config(text=f"⚠ Thumb rotation stopped: {rot_guard.reason}" if rot_guard.reason else "")
+    slip_label.config(text=f"Slip: {slip.status}" if slip.status else "",
+                      fg="red" if slip.reasons else "#006600")
 
 def toggle_auto_hold():
     hand.update(clear_since=None, contact_since=None, auto_armed=False)
@@ -1340,6 +1453,10 @@ object_label.pack(anchor="w")
 
 rot_label = tk.Label(status_frame, text="", fg="#cc00cc", justify="left", wraplength=480)
 rot_label.pack(anchor="w")
+
+slip_label = tk.Label(status_frame, text="", font=("TkDefaultFont", 11, "bold"), justify="left",
+                      wraplength=480)
+slip_label.pack(anchor="w")
 
 tk.Button(status_frame, text="Clear errors", command=clear_faults).pack(fill="x")
 
