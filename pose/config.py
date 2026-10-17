@@ -110,10 +110,10 @@ FINGER_LINKS = {
 # Palm patch, in hand_base_link coordinates (metres). PLACEHOLDER.
 # Palm patch along the fingers (row 0 near the wrist). Equal taxel pitch with the 14 taxels across
 # (~5 mm): 8 taxels ~ 36 mm. Centre at y = -80 mm chosen against 13 photo-labelled grasps (pose/eval).
-PALM_LENGTH_RANGE = (-0.062, -0.098)
+PALM_LENGTH_RANGE = (-0.035, -0.125)   # v1 palm patch
 PALM_WIDTH_RANGE = (-0.036, 0.030)     # across the palm, index side to little side
 # The palm's raw values are a 14 x 8 grid (logged as 8 x 14); see data_io.palm_grid.
-PALM_FIX_LAYOUT = True
+PALM_FIX_LAYOUT = False                 # v1: palm read as logged (8 x 14)
 PALM_FLIP_ALONG = False                 # direction of the 8-taxel axis (fingers <-> wrist), set from photo labels
 
 # --- Fitting --------------------------------------------------------------
