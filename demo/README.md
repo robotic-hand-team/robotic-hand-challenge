@@ -1,79 +1,74 @@
-# Grasp Inference & Visualization
+# Grasp Inference — Quick Start
 
-Quick tool to run all models on a session folder and get a result image.
+Run on any session folder to get a prediction image you can compare with the real world.
 
-## Input format
+---
 
-A session folder must contain these two files:
+## 1. Prepare your session folder
+
+Your folder needs exactly these two files:
 
 ```
 my_session/
-  tactile_summary.csv    ← tactile sensor readings (one row per frame)
-  actuators.csv          ← finger joint angles (one row per frame)
+  tactile_summary.csv     ← tactile sensor readings (one row per frame)
+  actuators.csv           ← finger joint angles    (one row per frame)
 ```
 
-Optionally (sim only — enables ground-truth overlay):
-```
-  object_pose.csv        ← true object position + phase label
-```
+Same structure as the folders in `models/dataset_sim/`.  
+`object_pose.csv` and `meta.json` are optional (sim only — enables ground-truth overlay).
 
-Same structure as the dataset folders in `models/dataset_sim/`.
+---
 
-## Usage
+## 2. Run
 
 ```bash
-# analyse a specific session → saves <session_name>_result.png
-python demo/run.py path/to/my_session/
-
-# use a default sim session (for testing)
-python demo/run.py
+python3 demo/run.py path/to/my_session/
 ```
 
-The script saves a PNG next to `run.py` and prints a summary:
-
-```
-Session : my_session
-Frames  : 87  |  ground truth: no
-Position: X=+42.3  Y=+98.7  Z=+112.1  mm (mean over hold frames)
-Tilt    : upright  (81% conf)
-Slip    :  3% of frames flagged as slipping
+**Example with a sim session (for testing):**
+```bash
+python3 demo/run.py models/dataset_sim/20261017_110506_w0_0000
 ```
 
-## What the image shows
+---
 
-| Panel | Description |
-|-------|-------------|
-| **3D view** (top-left) | Hand skeleton + red sphere = predicted object centre |
-| **Info** (top-centre) | Position, tilt, slip values for the selected frame |
-| **Slip timeline** (top-right) | Per-frame slip probability (orange) |
-| **Front / Side / Top** (bottom-left) | 2D projections of hand + object |
-| **XYZ over time** (bottom-right) | Predicted position per frame (or error if GT available) |
+## 3. Output
 
-Green triangle = ground truth (only visible when `object_pose.csv` present).
+Two images are saved in `demo/`:
 
-## Interactive mode
+### `<session>_compare.png` ← the one to compare with the camera
 
-Uncomment the last line in `run.py` to open an animated window instead of saving a PNG:
+Front view of the hand (lateral × height):
 
-```python
-# run(session, save_png=png_out)   ← comment this out
-run(session, animate=True)         ← uncomment this
-```
+| Marker | Meaning |
+|--------|---------|
+| **Red circle + arrow** | Predicted object centre + predicted tilt direction |
+| **Green triangle + arrow** | Ground-truth position + actual tilt (sim only) |
 
-Controls: `SPACE` = pause/resume · `←` / `→` = step through frames
+Hold this image next to your camera feed and check:
+- Is the red circle roughly where the object is?
+- Does the red arrow point in the tilt direction you see?
 
-## Models used
+### `<session>_result.png` ← full diagnostics (8 panels)
 
-All models live in `classifier/model/` and are loaded automatically.
+3D hand skeleton, slip timeline, front/side/top projections, error over time.
 
-| Model | Task | Accuracy |
-|-------|------|----------|
-| `pose_regressor.pkl` | XYZ position (mm) | ~9.6 mm RMSE |
-| `tilt_classifier.pkl` | upright vs tilted (≥10°) | ~70 % |
-| `slip_detector.pkl` | stable vs slipping | frame-level |
+---
 
-## Requirements
+## 4. What the models predict
 
-```
-numpy pandas scikit-learn xgboost joblib scipy matplotlib
-```
+| Output | Model | Accuracy |
+|--------|-------|----------|
+| XYZ position (mm) | `pose_regressor.pkl` | ~9.6 mm RMSE |
+| Tilt: upright / TILTED (≥10°) | `tilt_classifier.pkl` | ~91 % |
+| Slip: stable / slipping | `slip_detector.pkl` | frame-level |
+
+Models are loaded automatically from `classifier/model/`.
+
+---
+
+## 5. Known limitations
+
+- **Tilt direction** shown in red arrow comes from predicted pitch/roll — accuracy is limited (~57° RMSE). Use it as a rough indicator, not a precise angle.
+- **Tilt around Z axis** (object rotating away from palm) is barely covered in training data (max ±10°). Predictions outside this range are unreliable.
+- Models were trained on **simulation data only**. Real hardware may show a distribution shift.
