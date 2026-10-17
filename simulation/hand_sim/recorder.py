@@ -69,7 +69,8 @@ def _tactile_fields(prefix_rowcol: bool):
 RAW_FIELDS = _tactile_fields(True)
 SUMMARY_FIELDS = _tactile_fields(False)
 POSE_FIELDS = ["frame", "t_unix", "t_rel", "phase", "pos_x", "pos_y", "pos_z", "quat_w", "quat_x", "quat_y",
-               "quat_z", "lin_vel_x", "lin_vel_y", "lin_vel_z", "ang_vel_x", "ang_vel_y", "ang_vel_z", "in_hand"]
+               "quat_z", "ori_x", "ori_y", "ori_z", "lin_vel_x", "lin_vel_y", "lin_vel_z", "ang_vel_x", "ang_vel_y",
+               "ang_vel_z", "in_hand"]
 
 
 class DatasetRecorder:
@@ -106,10 +107,14 @@ class DatasetRecorder:
 
         pos, quat = w.object_pose(episode.obj_id)
         vel = w.d.qvel[w._ids[episode.obj_id]["vadr"] : w._ids[episode.obj_id]["vadr"] + 6]
+        ori = np.zeros(3)
+        import mujoco
+        mujoco.mju_rotVecQuat(ori, np.array([0.0, 1.0, 0.0]), np.asarray(quat, dtype=float))
         self.rows["object_pose"].append({
             "frame": self.frame, "t_unix": f"{t_unix:.4f}", "t_rel": f"{t_rel:.4f}", "phase": obs.phase,
             "pos_x": pos[0], "pos_y": pos[1], "pos_z": pos[2],
             "quat_w": quat[0], "quat_x": quat[1], "quat_y": quat[2], "quat_z": quat[3],
+            "ori_x": ori[0], "ori_y": ori[1], "ori_z": ori[2],
             "lin_vel_x": vel[0], "lin_vel_y": vel[1], "lin_vel_z": vel[2],
             "ang_vel_x": vel[3], "ang_vel_y": vel[4], "ang_vel_z": vel[5],
             "in_hand": int(obs.phase != "approach"),
