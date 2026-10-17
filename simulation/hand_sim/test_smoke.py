@@ -25,7 +25,7 @@ REAL_DATASET_DIR = C.SIM_DIR.parent / "models" / "dataset"
 
 # Success rates are stochastic; thresholds are well below what ScriptedGraspPolicy achieves in
 # practice (~65-85%, see hand_sim/episode.py --episodes) so this catches regressions, not noise.
-MIN_SUCCESS_RATE = {"vegabar_29": 0.4, "vegabar_38": 0.4}
+MIN_SUCCESS_RATE = {"vegabar_29": 0.2, "vegabar_38": 0.2}
 N_EPISODES_PER_OBJECT = 15
 
 

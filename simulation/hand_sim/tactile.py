@@ -18,11 +18,11 @@ BLUR_SIGMA_CELLS = 0.9  # contact force spreads onto neighbouring taxels (real s
 NOISE_STD_RAW = 3.0
 
 
-def _body_local_points(model, body_id):
-    """All collision-geom surface points (mesh vertices or primitive-geom corners) in body frame."""
+def _body_local_points(model, body_id, group=2):
+    """All geom surface points (mesh vertices or primitive-geom corners) in body frame."""
     pts = []
     for g in range(model.ngeom):
-        if model.geom_bodyid[g] != body_id or model.geom_group[g] != 2:
+        if model.geom_bodyid[g] != body_id or model.geom_group[g] != group:
             continue
         gtype = mujoco.mjtGeom(model.geom_type[g])
         rot = np.zeros(9)

@@ -23,6 +23,7 @@ class Observation:
     phase_t: float  # seconds since the current phase started
     registers: dict  # HandController.read(): angle_set/angle_act/force_act/current/error/status (DOF order)
     tactile: dict | None = None  # filled in by the tactile model (milestone 3)
+    proximity: float = 1.0  # distance (m) from object to palm body
 
 
 @dataclass
@@ -61,11 +62,11 @@ class ScriptedGraspPolicy(Policy):
 
     def act(self, obs):
         if obs.phase == PHASE_APPROACH:
-            return Action(angle_set=C.PRESHAPE_ANGLES, force_set=[self._force] * 6)
+            return Action(angle_set=C.PRESHAPE_ANGLES, force_set=[self._force] * 4 + [1000, 200])
         if obs.phase == PHASE_GRASP:
             if not self._closing_sent:
                 self._closing_sent = True
-                return Action(angle_set=self.CLOSE_ANGLES, force_set=[self._force] * 6)
+                return Action(angle_set=self.CLOSE_ANGLES, force_set=[self._force] * 4 + [1000, 200])
             angles = np.asarray(obs.registers["angle_act"])
             if self._last_angles is not None and np.abs(angles - self._last_angles).max() <= 2:
                 self._still_since = obs.t if self._still_since is None else self._still_since

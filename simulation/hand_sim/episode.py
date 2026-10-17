@@ -16,7 +16,7 @@ from . import config as C
 from .policy import PHASE_APPROACH, PHASE_GRASP, PHASE_HOLD, Action, Observation, Policy, ScriptedGraspPolicy
 from .world import World
 
-MAX_SAMPLE_TRIES = 50
+MAX_SAMPLE_TRIES = 80
 PATH_CHECK_POINTS = 12
 PENETRATION_TOL_M = -0.001
 DROP_SHIFT_M = 0.05
@@ -57,6 +57,7 @@ class HandoverEpisode:
         self.obj_id = obj_id or str(rng.choice(list(C.OBJECTS)))
         self.randomize = randomize  # False: start exactly at the object's nominal grasp_pos/grasp_quat
         self.on_frame = on_frame  # callable(episode, Observation) once per control tick (recorder hook)
+        self._forced = False
         self.substeps = round(1.0 / (C.CONTROL_HZ * world.m.opt.timestep))
         self.done = False
         self.result: dict | None = None
@@ -74,10 +75,15 @@ class HandoverEpisode:
         tilt_z = self.rng.uniform(*C.TILT_Z_RANGE_RAD)
         offset = np.array([self.rng.uniform(lo, hi) for lo, hi in cfg["offset_range"]])
         quat = _qmul(_qmul(_quat([0, 0, 1], tilt_z), _quat([1, 0, 0], tilt_x)), _qmul(q_nom, _quat([0, 1, 0], roll)))
+        # Occasional extreme orientations (edge cases).
+        if self.rng.random() < 0.2:
+            quat = _qmul(_quat([1, 0, 0], np.pi), quat)  # flipped end-over-end
+        if self.rng.random() < 0.2:
+            quat = _qmul(_quat([0, 0, 1], np.pi), quat)  # mirrored across palm midplane
         pivot_world = pivot_nom + offset
         pos = pivot_world - _rotate(quat, pivot)
 
-        direction = np.array([self.rng.uniform(0.0, 0.6), self.rng.uniform(-0.6, 0.6), 1.0])
+        direction = np.array([self.rng.uniform(-0.3, 0.8), self.rng.uniform(-0.8, 0.8), 0.5])
         direction /= np.linalg.norm(direction)
         info = {
             "roll_rad": roll,
@@ -127,8 +133,13 @@ class HandoverEpisode:
         return self.world.d.time - self.t0
 
     def observation(self) -> Observation:
+        raw = self.world.tactile.step(self.world.d)
+        summary = self.world.tactile.summary(raw)
+        pos, _ = self.world.object_pose(self.obj_id)
+        palm_id = self.world.m.body("right_hand_root").id
+        proximity = float(np.linalg.norm(pos - self.world.d.xpos[palm_id]))
         return Observation(t=self.t, phase=self.phase, phase_t=self.world.d.time - self.phase_t0,
-                           registers=self.world.hand.read())
+                           registers=self.world.hand.read(), tactile=summary, proximity=proximity)
 
     def _apply(self, action: Action):
         hand = self.world.hand
