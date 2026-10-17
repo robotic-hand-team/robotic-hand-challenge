@@ -176,6 +176,12 @@ body {
 
 .error { color: var(--danger); font-size: 14px; }
 
+.live-bar { min-height: 73px; }
+.live-meta { font: 13px var(--mono); color: var(--text-2); }
+.dot.pulse { animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .dot.pulse { animation: none; } }
+
 @media (max-width: 1100px) {
   .main { grid-template-columns: 1fr; grid-template-areas: "twin" "kpis" "charts"; grid-template-rows: 520px auto auto; padding: var(--s2); }
   .kpis { grid-template-columns: repeat(2, 1fr); grid-template-rows: auto; }

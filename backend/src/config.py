@@ -15,7 +15,14 @@ HAND_SIDE = os.environ.get("TWIN_HAND_SIDE", "right")
 # load ("input stream corrupted"), see README.
 CLASSIFIER_SUFFIX = os.environ.get("CLASSIFIER_SUFFIX", "_sim")
 
-OBJECT_TO_LABEL = {"vegabar_29": "A", "vegabar_38": "B"}
+# Live hand: hardware/config.py broadcasts one JSON datagram per frame (BROADCAST_HOST/PORT).
+# 0.0.0.0: broadcasts to 255.255.255.255 never reach a socket bound to 127.0.0.1.
+LIVE_UDP_HOST = os.environ.get("LIVE_UDP_HOST", "0.0.0.0")
+LIVE_UDP_PORT = int(os.environ.get("LIVE_UDP_PORT", "5005"))
+LIVE_HAND_SIDE = os.environ.get("LIVE_HAND_SIDE", "left")  # the right hand is out of service (pose/config.py)
+LIVE_CLASSIFIER_SUFFIX = os.environ.get("LIVE_CLASSIFIER_SUFFIX", "_combined")  # real + sim training data
+
+OBJECT_TO_LABEL ={"vegabar_29": "A", "vegabar_38": "B"}
 LABEL_NAMES = {"A": "Sensor A · VEGABAR 29", "B": "Sensor B · VEGABAR 38"}
 MIN_CONTACTS_ACTIVE = 20       # classifier/predict.py: frames with fewer contacts are pre/post grasp
 SLIP_SPEED_MM_S = 20.0         # object speed relative to the hand counted as slipping during the hold

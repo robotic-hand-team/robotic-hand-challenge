@@ -63,7 +63,7 @@ function applyPose(node, p) {
   node.quaternion.set(p[4], p[5], p[6], p[3]); // MuJoCo w,x,y,z -> three x,y,z,w
 }
 
-function Twin({ frame, truthObject, estimate, onFloor }) {
+function Twin({ frame, truthObject, estimate, onFloor, mirrored }) {
   const { scene } = useGLTF(TWIN_GLB_URL);
   const gl = useThree((s) => s.gl);
   // Reflections for the metal wrist only, from three's built-in studio room (nothing downloaded).
@@ -96,7 +96,8 @@ function Twin({ frame, truthObject, estimate, onFloor }) {
       if (node) applyPose(node, pose);
     }
     // Show the *estimated* sensor at the object's pose; grey ghost until the classifier has a vote.
-    const shown = estimate ? LABEL_TO_OBJECT[estimate.label] : truthObject;
+    // Live mode has no object until there is an estimate and a position (truthObject = null).
+    const shown = !truthObject ? null : estimate ? LABEL_TO_OBJECT[estimate.label] : truthObject;
     for (const obj of OBJECTS) {
       const node = root.getObjectByName(obj);
       if (!node) continue;
@@ -118,7 +119,15 @@ function Twin({ frame, truthObject, estimate, onFloor }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [root, truthObject, frame != null]);
 
-  return <primitive object={root} />;
+  // The left hand is the right one mirrored across the plane through the hand root (y = 0.1), the
+  // same construction as simulation/hand_sim/left_hand.py; three flips the face winding itself.
+  return mirrored ? (
+    <group position={[0, 0.2, 0]} scale={[1, -1, 1]}>
+      <primitive object={root} />
+    </group>
+  ) : (
+    <primitive object={root} />
+  );
 }
 
 const STAGE = "#f5f5f5"; // background = fog colour, so the floor fades into an endless white space
@@ -163,8 +172,12 @@ function Studio({ floorZ }) {
   );
 }
 
-export default function TwinView({ frame, session, estimate }) {
+// session: {object, hand_side} of the replayed session or the live hand; caption: second chip;
+// message: centred notice over the viewport (e.g. waiting for the live stream).
+export default function TwinView({ frame, session, estimate, caption, message }) {
   const info = estimate ? SENSOR_INFO[estimate.label] : null;
+  // Replay sessions come from the right-hand sim; the live left hand is shown mirrored.
+  const mirrored = session?.mirrored ?? false;
   const [floorZ, setFloorZ] = useState(-0.03);
   return (
     <div className="viewport">
@@ -176,7 +189,9 @@ export default function TwinView({ frame, session, estimate }) {
       >
         <Studio floorZ={floorZ} />
         <Suspense fallback={null}>
-          {session && <Twin frame={frame} truthObject={session.object} estimate={estimate} onFloor={setFloorZ} />}
+          {session && frame && (
+            <Twin frame={frame} truthObject={session.object} estimate={estimate} onFloor={setFloorZ} mirrored={mirrored} />
+          )}
         </Suspense>
         <OrbitControls
           target={[0.03, 0.1, 0.09]}
@@ -197,12 +212,12 @@ export default function TwinView({ frame, session, estimate }) {
             <>Waiting for contact · sensor unidentified</>
           )}
         </span>
-        {session && <span className="chip">{session.hand_side} hand · sim session <strong>{session.id}</strong></span>}
+        {caption && <span className="chip">{caption}</span>}
       </div>
       <div className="overlay overlay-right">
         <span className="chip">Drag to orbit · scroll to zoom</span>
       </div>
-      {!session && <div className="viewport-msg">Loading digital twin…</div>}
+      {(message || !session) && <div className="viewport-msg">{message || "Loading digital twin…"}</div>}
     </div>
   );
 }

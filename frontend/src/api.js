@@ -8,6 +8,8 @@ async function get(path) {
 export const fetchSessions = () => get("/sessions");
 export const fetchSession = (id) => get(`/sessions/${encodeURIComponent(id)}`);
 export const TWIN_GLB_URL = "/api/twin.glb";
+export const liveSocketUrl = () =>
+  `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}/api/live`;
 
 // Sensor labels -> simulation object ids (vegabar_29 = Sensor A, vegabar_38 = Sensor B).
 export const LABEL_TO_OBJECT = { A: "vegabar_29", B: "vegabar_38" };

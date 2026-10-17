@@ -5,6 +5,7 @@ and then only body poses per frame, so hand and object always share the simulati
 """
 import os
 import sys
+import threading
 
 import mujoco
 import numpy as np
@@ -37,6 +38,7 @@ class Twin:
         self.objects = list(SC.OBJECTS)
         self.obj_qadr = {o: m.jnt_qposadr[m.joint(f"{o}_free").id] for o in self.objects}
         self.root = f"{C.HAND_SIDE}_hand_root"
+        self.lock = threading.Lock()
 
     def export_glb(self, path):
         """Write every visual mesh as one node per body (body-local coordinates, metres)."""
@@ -62,22 +64,27 @@ class Twin:
         path.parent.mkdir(parents=True, exist_ok=True)
         scene.export(path)
 
-    def poses(self, angles: np.ndarray, obj: str, obj_pose: np.ndarray) -> dict:
-        """Body poses [x, y, z, qw, qx, qy, qz] for hand angles (0-1000, DOF order) and object pose."""
-        d = self.d
-        d.qpos[:] = 0
-        d.qpos[self.dof_qadr] = self.dof_qmax * (1.0 - np.clip(angles, 0, 1000) / 1000.0)
-        for q1, q2, c in self.couplings:
-            x = d.qpos[q2]
-            d.qpos[q1] = c[0] + c[1] * x + c[2] * x**2 + c[3] * x**3 + c[4] * x**4
-        a = self.obj_qadr[obj]
-        d.qpos[a:a + 7] = obj_pose
-        mujoco.mj_kinematics(self.m, d)
-        out = {}
-        for name in self.hand_bodies + [obj]:
-            b = self.m.body(name).id
-            out[name] = np.round(np.concatenate([d.xpos[b], d.xquat[b]]), 5).tolist()
-        return out
+    def poses(self, angles: np.ndarray, obj: str | None = None, obj_pose: np.ndarray | None = None) -> dict:
+        """Body poses [x, y, z, qw, qx, qy, qz] for hand angles (0-1000, DOF order) and, optionally,
+        one object's pose [x, y, z, qw, qx, qy, qz]."""
+        with self.lock:  # replay requests (thread pool) and live frames (event loop) share one MjData
+            d = self.d
+            d.qpos[:] = 0
+            d.qpos[self.dof_qadr] = self.dof_qmax * (1.0 - np.clip(angles, 0, 1000) / 1000.0)
+            for q1, q2, c in self.couplings:
+                x = d.qpos[q2]
+                d.qpos[q1] = c[0] + c[1] * x + c[2] * x**2 + c[3] * x**3 + c[4] * x**4
+            names = list(self.hand_bodies)
+            if obj is not None:
+                a = self.obj_qadr[obj]
+                d.qpos[a:a + 7] = obj_pose
+                names.append(obj)
+            mujoco.mj_kinematics(self.m, d)
+            out = {}
+            for name in names:
+                b = self.m.body(name).id
+                out[name] = np.round(np.concatenate([d.xpos[b], d.xquat[b]]), 5).tolist()
+            return out
 
     def root_pos(self):
         return self.m.body(self.root).pos.copy()

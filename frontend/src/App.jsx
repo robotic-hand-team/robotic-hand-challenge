@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { fetchSession, fetchSessions } from "./api.js";
 import KpiCards from "./components/KpiCards.jsx";
 import TwinView from "./components/TwinView.jsx";
+import useLive from "./useLive.js";
 
 const CHART_SLOTS = ["Tactile pressure over time", "Finger forces", "Classifier confidence", "Slip velocity"];
 
@@ -20,13 +21,57 @@ function usePlayback(session) {
   return { index: Math.min(index, Math.max(n - 1, 0)), setIndex, playing, setPlaying, n };
 }
 
+function ReplayBar({ play, frame }) {
+  return (
+    <div className="timeline">
+      <button className="btn" aria-label={play.playing ? "Pause" : "Play"} onClick={() => play.setPlaying((p) => !p)}>
+        {play.playing ? "❚❚" : "▶"}
+      </button>
+      <input
+        className="scrubber"
+        type="range"
+        min={0}
+        max={Math.max(play.n - 1, 0)}
+        value={play.index}
+        aria-label="Frame"
+        onChange={(e) => { play.setPlaying(false); play.setIndex(Number(e.target.value)); }}
+      />
+      <span className={`badge phase ${frame?.phase === "hold" ? "badge-ok" : ""}`}>{frame?.phase ?? "–"}</span>
+      <span className="time">{frame ? `${frame.t.toFixed(2)} s · ${play.index + 1}/${play.n}` : "–"}</span>
+    </div>
+  );
+}
+
+function LiveBar({ live }) {
+  const { status, connected, socketOpen, frame } = live;
+  return (
+    <div className="timeline live-bar">
+      <span className={`badge ${connected ? "badge-ok" : "badge-danger"}`}>
+        <span className={`dot ${connected ? "pulse" : ""}`} />
+        {connected ? "Live" : socketOpen ? "No hand data" : "Backend offline"}
+      </span>
+      <span className="live-meta">
+        {connected
+          ? `${status.rate_hz.toFixed(0)} Hz · ${status.source} · ${status.hand_side} hand` +
+            (status.has_tactile ? "" : " · no tactile data in broadcast")
+          : `Start hardware/config.py — listening on udp://${status?.udp ?? "0.0.0.0:5005"}`}
+      </span>
+      <span className="header-spacer" />
+      {connected && frame?.frozen && <span className="badge badge-danger"><span className="dot" />Motor data frozen</span>}
+      <span className={`badge phase ${frame?.phase === "HOLD" ? "badge-ok" : ""}`}>{frame?.phase ?? "–"}</span>
+    </div>
+  );
+}
+
 export default function App() {
+  const [mode, setMode] = useState("replay");
   const [sessions, setSessions] = useState([]);
   const [filter, setFilter] = useState("all");
   const [sessionId, setSessionId] = useState(null);
   const [session, setSession] = useState(null);
   const [error, setError] = useState(null);
   const play = usePlayback(session);
+  const live = useLive(mode === "live");
 
   useEffect(() => {
     fetchSessions()
@@ -47,8 +92,19 @@ export default function App() {
     () => sessions.filter((s) => filter === "all" || s.label === filter),
     [sessions, filter]
   );
-  const frame = session?.frames[play.index];
   const random = () => shown.length && setSessionId(shown[Math.floor(Math.random() * shown.length)].id);
+
+  const isLive = mode === "live";
+  const frame = isLive ? live.frame : session?.frames[play.index];
+  const twinSession = isLive
+    ? { object: live.frame?.object ?? null, mirrored: (live.status?.hand_side ?? "left") === "left" }
+    : session && { object: session.object, mirrored: false };
+  const caption = isLive
+    ? live.connected && `${live.status.hand_side} hand · live`
+    : session && <>{session.hand_side} hand · sim session <strong>{session.id}</strong></>;
+  const message = isLive && !live.frame
+    ? live.socketOpen ? "Waiting for the hand — start hardware/config.py" : "Connecting to the backend…"
+    : null;
 
   return (
     <div className="app">
@@ -62,56 +118,50 @@ export default function App() {
         </div>
         <div className="header-spacer" />
         <div className="header-controls">
-          <div className="seg" role="group" aria-label="Filter sessions by sensor">
-            {[["all", "All"], ["A", "Sensor A"], ["B", "Sensor B"]].map(([k, label]) => (
-              <button key={k} aria-pressed={filter === k} onClick={() => setFilter(k)}>{label}</button>
+          <div className="seg" role="group" aria-label="Data source">
+            {[["replay", "Replay"], ["live", "Live hand"]].map(([k, label]) => (
+              <button key={k} aria-pressed={mode === k} onClick={() => setMode(k)}>{label}</button>
             ))}
           </div>
-          <select
-            className="select"
-            aria-label="Session"
-            value={sessionId ?? ""}
-            onChange={(e) => setSessionId(e.target.value)}
-          >
-            {sessionId && !shown.some((s) => s.id === sessionId) && <option value={sessionId}>{sessionId}</option>}
-            {shown.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.id} · {s.label ? `Sensor ${s.label}` : s.object}{s.success === false ? " · failed grasp" : ""}
-              </option>
-            ))}
-          </select>
-          <button className="btn btn-primary" onClick={random}>Random session</button>
+          {!isLive && (
+            <>
+              <div className="seg" role="group" aria-label="Filter sessions by sensor">
+                {[["all", "All"], ["A", "Sensor A"], ["B", "Sensor B"]].map(([k, label]) => (
+                  <button key={k} aria-pressed={filter === k} onClick={() => setFilter(k)}>{label}</button>
+                ))}
+              </div>
+              <select
+                className="select"
+                aria-label="Session"
+                value={sessionId ?? ""}
+                onChange={(e) => setSessionId(e.target.value)}
+              >
+                {sessionId && !shown.some((s) => s.id === sessionId) && <option value={sessionId}>{sessionId}</option>}
+                {shown.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.id} · {s.label ? `Sensor ${s.label}` : s.object}{s.success === false ? " · failed grasp" : ""}
+                  </option>
+                ))}
+              </select>
+              <button className="btn btn-primary" onClick={random}>Random session</button>
+            </>
+          )}
         </div>
       </header>
 
       <main className="main">
-        <KpiCards frame={frame} session={session} />
+        <KpiCards frame={frame} session={isLive ? null : session} live={isLive} noTactile={isLive && frame && !frame.has_tactile} />
 
         <section className="card twin" aria-label="Digital twin">
-          <TwinView frame={frame} session={session} estimate={frame?.kpi.sensor} />
-          <div className="timeline">
-            <button
-              className="btn"
-              aria-label={play.playing ? "Pause" : "Play"}
-              onClick={() => play.setPlaying((p) => !p)}
-            >
-              {play.playing ? "❚❚" : "▶"}
-            </button>
-            <input
-              className="scrubber"
-              type="range"
-              min={0}
-              max={Math.max(play.n - 1, 0)}
-              value={play.index}
-              aria-label="Frame"
-              onChange={(e) => { play.setPlaying(false); play.setIndex(Number(e.target.value)); }}
-            />
-            <span className={`badge phase ${frame?.phase === "hold" ? "badge-ok" : ""}`}>{frame?.phase ?? "–"}</span>
-            <span className="time">
-              {frame ? `${frame.t.toFixed(2)} s · ${play.index + 1}/${play.n}` : "–"}
-            </span>
-          </div>
-          {error && <div className="timeline error" role="alert">Backend: {error}</div>}
+          <TwinView
+            frame={frame}
+            session={twinSession}
+            estimate={frame?.kpi.sensor}
+            caption={caption}
+            message={message}
+          />
+          {isLive ? <LiveBar live={live} /> : <ReplayBar play={play} frame={frame} />}
+          {error && !isLive && <div className="timeline error" role="alert">Backend: {error}</div>}
         </section>
 
         <div className="charts">
