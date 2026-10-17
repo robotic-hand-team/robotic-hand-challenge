@@ -12,7 +12,8 @@ REF = "hand_base_link"
 
 
 class HandModel:
-    def __init__(self, urdf_path=C.HAND_URDF):
+    def __init__(self, urdf_path=None):
+        urdf_path = urdf_path or C.HAND_URDF  # read at call time, so config.set_hand() takes effect
         self.urdf = yourdfpy.URDF.load(str(urdf_path), load_meshes=False,
                                        build_scene_graph=True)
         self.dir = urdf_path.parent
@@ -114,6 +115,18 @@ class HandModel:
             i, k = ij[r]
             pts[i, k] = loc
             nrm[i, k] = n if np.dot(n, palmar) > 0 else palmar
+        # Rays that miss (the grid reaches past the curved fingertip or the link's edge) used to leave
+        # the taxel without a position, so pressure there was ignored, e.g. a fingertip touch on the
+        # first rows of a Nail patch. Snap those taxels to the nearest point on the link surface instead.
+        miss = [r for r in range(len(origins)) if r not in best] if C.snap_missed_taxels() else []
+        if miss:
+            base = np.array(origins)[miss] + palmar * 0.05
+            near, _, tri = trimesh.proximity.closest_point(mesh, base)
+            for r, p, t in zip(miss, near, tri):
+                i, k = ij[r]
+                pts[i, k] = p
+                n = mesh.face_normals[t]
+                nrm[i, k] = n if np.dot(n, palmar) > -0.2 else palmar
         return pts, nrm
 
     def _palm_patch(self, rows, cols):

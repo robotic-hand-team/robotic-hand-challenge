@@ -31,6 +31,18 @@ LABEL_TO_OBJECT = {"A": "vegabar29", "B": "vegabar38"}
 HAND_SIDE = "right"
 HAND_URDF = ROOT / "inspire_hand" / f"inspire_hand_{HAND_SIDE}.urdf"
 
+
+def set_hand(side: str):
+    """Switch to the right or left hand. The left URDF is the right one mirrored across the palm
+    (hand_base_link z -> -z: the thumb sits at +z instead of -z), so the palm patch is mirrored too.
+    Call before creating a HandModel."""
+    global HAND_SIDE, HAND_URDF, PALM_WIDTH_RANGE
+    if side == HAND_SIDE:
+        return
+    HAND_SIDE = side
+    HAND_URDF = ROOT / "inspire_hand" / f"inspire_hand_{side}.urdf"
+    PALM_WIDTH_RANGE = (-PALM_WIDTH_RANGE[0], -PALM_WIDTH_RANGE[1])
+
 # Raw actuator value -> joint angle.  Inspire convention: 1000 = open, 0 = closed.
 # joint = (1000 - raw) / 1000 * joint_upper_limit  (linear approximation)
 # PLACEHOLDER: replace with the manual's angle table if it gives one.
@@ -77,6 +89,15 @@ REGION_LAYOUT = {
     "mid":  {"segment": "middle",   "span": (0.20, 0.80), "width": 0.6},  # thumb only
 }
 ROW0_AT_TIP = True            # PLACEHOLDER: is taxel row 0 at the fingertip end?
+# Taxels whose placement ray misses the finger mesh (tip rows of Nail/Tip patches: ~25 % / ~44 %) get
+# no position, so their pressure is ignored. "auto" snaps them to the nearest surface point for the
+# left hand only: there it rescues fingertip grasps (fit error 35 -> 2 mm on 20261017_170352), while on
+# the 13 photo-labelled right-hand grasps it changed nothing measurable (pose/eval). True / False / "auto".
+SNAP_MISSED_TAXELS = "auto"
+
+
+def snap_missed_taxels() -> bool:
+    return HAND_SIDE == "left" if SNAP_MISSED_TAXELS == "auto" else bool(SNAP_MISSED_TAXELS)
 
 FINGER_LINKS = {
     "little": {"proximal": "pinky_proximal", "distal": "pinky_intermediate"},

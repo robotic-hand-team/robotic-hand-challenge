@@ -37,6 +37,14 @@ def hand_base_link_in_world(m, d) -> np.ndarray:
 
 def load(path) -> dict:
     est = json.loads(Path(path).read_text())
+    if est.get("hand") == "left":
+        # The simulation only has the right hand. The left URDF is the right one mirrored across the
+        # palm (hand_base_link z -> -z), so the mirror image of a left-hand grasp is a valid right-hand
+        # grasp with the same joint angles. S T S keeps the rotation proper; the sensor is shown with
+        # its CAD z mirrored, which for these near-axisymmetric sensors looks the same.
+        S = np.diag([1.0, 1.0, -1.0, 1.0])
+        est["T_hand_cad"] = (S @ np.array(est["T_hand_cad"]) @ S).tolist()
+        est["status"] = f"{est['status']} (left hand, shown mirrored)"
     if est["object"] not in C.OBJECTS:
         raise KeyError(f"object {est['object']!r} not in simulation (have {list(C.OBJECTS)})")
     return est

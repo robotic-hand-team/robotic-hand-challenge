@@ -8,6 +8,7 @@ Usage:
 import argparse
 import csv
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -119,6 +120,7 @@ def export_for_sim(path, row, T_cad, hand):
         "frame": "hand_base_link",           # URDF frame, metres
         "T_hand_cad": np.round(T_cad, 6).tolist(),   # STL vertices (mm * 0.001) -> hand frame
         "joint_rad": joints,                  # actuated joints, keyed by DOF name
+        "hand": C.HAND_SIDE,                  # left: the simulation (right hand only) shows it mirrored
     }
     path.write_text(json.dumps(out, indent=2))
 
@@ -128,10 +130,15 @@ def main():
     ap.add_argument("--object", default="auto", choices=["auto"] + list(C.OBJECTS),
                     help="auto = use SESSION_LABELS in config.py (classifier stand-in)")
     ap.add_argument("--session", default="all")
+    ap.add_argument("--hand", default=C.HAND_SIDE, choices=["right", "left"], help="which hand recorded the logs")
+    ap.add_argument("--log-dir", help="folder with session subfolders (default: config.LOG_DIR)")
     ap.add_argument("--axis-hint", default="config",
                     choices=["config", "none", "along_palm", "across_palm", "out_of_palm"],
                     help="rough grasp type; 'config' uses SESSION_AXIS_HINTS / AXIS_HINT")
     a = ap.parse_args()
+    C.set_hand(a.hand)
+    if a.log_dir:
+        C.LOG_DIR = Path(a.log_dir)
 
     if not C.HAND_URDF.exists() or not (C.HAND_URDF.parent / "meshes").exists():
         raise SystemExit(f"Hand model incomplete: need {C.HAND_URDF} and a meshes/ folder "
