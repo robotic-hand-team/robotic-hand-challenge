@@ -43,6 +43,36 @@ class SensorClassifier:
         return self.model.predict_proba(self.scaler.transform(X))[:, 1]
 
 
+class HoldMeanSensorClassifier:
+    """final_model/sensor_classifier.pkl: one estimate per grasp from the mean of its features over
+    the hold phase (same features and NaN -> 0 handling as final_model/match_session.py)."""
+
+    def __init__(self, path=C.HOLD_MEAN_MODEL):
+        import pickle
+        import warnings
+        with warnings.catch_warnings(record=True) as caught:   # saved with newer sklearn/xgboost
+            warnings.simplefilter("always")
+            with open(path, "rb") as f:
+                bundle = pickle.load(f)
+        if caught:
+            print(f"[backend] {path.name}: saved with other library versions "
+                  f"({len(caught)} warnings) – re-export it if the estimates look wrong")
+        self.model, self.scaler = bundle["xgb"], bundle["scaler"]
+        self.features = list(bundle["feature_cols"])
+        self.index_b = list(bundle["label_encoder"].classes_).index("sensor_B")
+        self.name = f"final_model/{path.name} (hold mean, LOO {bundle.get('loo_accuracy', '?')})"
+
+    def vector(self, row: dict) -> np.ndarray:
+        """One frame's features in model order (missing / None -> 0)."""
+        return np.array([row.get(c) or 0.0 for c in self.features], float)
+
+    def p_sensor_b(self, mean_vector: np.ndarray) -> float:
+        # float32 like match_session.py: some trees split right at a training session's value, and
+        # float64 vs float32 means flipped 20261017_202049 from p_B 0.33 to 0.84
+        X = self.scaler.transform(mean_vector.astype(np.float32).reshape(1, -1))
+        return float(self.model.predict_proba(X)[0, self.index_b])
+
+
 @lru_cache(maxsize=1)
 def classifier() -> SensorClassifier | None:
     try:

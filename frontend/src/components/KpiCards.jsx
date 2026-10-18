@@ -39,7 +39,7 @@ function PositionCard({ kpi, live }) {
       </div>
       <span className="kpi-sub">
         {live
-          ? "Tactile estimate (physics model, about ±25 mm) · palm +x, fingers +z"
+          ? "Approximate: default grasp position, shifted ≤ 20 mm by the tactile model · palm +x, fingers +z"
           : "Relative to the hand root · palm +x, fingers +z"}
       </span>
     </section>

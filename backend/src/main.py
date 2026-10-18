@@ -79,7 +79,7 @@ async def live_ws(ws: WebSocket):
             elif loop.time() - last_status > 1.0:
                 last_status = loop.time()
                 await ws.send_json({"type": "status", "status": live.status()})
-            await asyncio.sleep(0.02)
+            await asyncio.sleep(0.01)  # poll for a new frame: adds 5 ms on average
     except (WebSocketDisconnect, RuntimeError):
         pass
 
