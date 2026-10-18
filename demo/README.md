@@ -34,7 +34,7 @@ python3 demo/run.py models/dataset_sim/20261017_110506_w0_0000
 
 ## 3. Output
 
-Two images are saved in `demo/`:
+Two images are saved in `demo/gen_pics/` (created automatically):
 
 ### `<session>_compare.png` ← the one to compare with the camera
 

@@ -12,7 +12,8 @@ Input folder must contain:
     object_pose.csv       (optional — sim only, enables ground-truth overlay)
 
 Output:
-    <session_name>_result.png  — saved next to this script
+    gen_pics/<session_name>_result.png   — 8-panel diagnostics
+    gen_pics/<session_name>_compare.png  — front view to compare with the camera
     Interactive matplotlib window (press SPACE to pause, ←/→ to step)
 
 Models used  (../classifier/model/):
@@ -29,13 +30,15 @@ import numpy as np
 import pandas as pd
 import joblib
 import matplotlib
-matplotlib.use("MacOSX")   # macOS native; change to "TkAgg" on Linux/Windows
+matplotlib.use("MacOSX" if sys.platform == "darwin" else "TkAgg")
+sys.stdout.reconfigure(encoding="utf-8")   # Windows console defaults to cp1252 (no →)
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from scipy.spatial.transform import Rotation
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 HERE      = Path(__file__).resolve().parent
+OUT_DIR   = HERE / "gen_pics"          # every generated image goes here
 ROOT      = HERE.parent
 MODEL_DIR = ROOT / "classifier" / "model"
 XML_PATH  = ROOT / "simulation" / "Inspire_hand" / "xml" / "inspire_hand_right.xml"
@@ -618,6 +621,8 @@ if __name__ == "__main__":
         session  = sessions[10]
         print(f"No session given — using default: {session.name}")
 
+    OUT_DIR.mkdir(exist_ok=True)
+
     # ── Load once, use for both outputs ───────────────────────────────────────
     hold, gt_available = load_session(session)
     (pos_model,  pos_scaler,  pos_cols,
@@ -653,11 +658,11 @@ if __name__ == "__main__":
                      tilt_lbl=tilt_lbl, tilt_proba=tilt_proba, slip_prob=slip_prob)
 
     # Full 8-panel result
-    run(session, save_png=HERE / f"{session.name}_result.png", _preloaded=preloaded)
+    run(session, save_png=OUT_DIR / f"{session.name}_result.png", _preloaded=preloaded)
 
     # Simple top-down compare view
     save_compare(session,
-                 out_png       = HERE / f"{session.name}_compare.png",
+                 out_png       = OUT_DIR / f"{session.name}_compare.png",
                  pred_xyz_mean = mean_pos,
                  pred_ori_mean = mean_ori,
                  tilt_lbl      = tilt_lbl,
