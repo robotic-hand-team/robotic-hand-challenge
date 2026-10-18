@@ -178,7 +178,7 @@ def geometry_report() -> None:
     print("  bulge = collision surface sticks out past the drawn surface (early/wrong contacts)")
     print("  gap   = drawn surface with no collision behind it (coarse, mostly harmless)")
     print(f"  {'body':30s} {'col parts':>9s} {'col verts':>9s} {'vis verts':>9s} {'bulge mm':>9s} {'gap mm':>8s}")
-    for name in sorted(n for n in geometry if n.startswith(f"{C.HAND_SIDE}_")):
+    for name in sorted(n for n in geometry if n.startswith("right_")):
         entry = geometry[name]
         if not entry["col"]:
             note = f"{entry['other']} geoms of an unrepresentable type" if entry["other"] else "no collision"
@@ -216,7 +216,7 @@ def _hand_self_pairs(model: mujoco.MjModel) -> list[tuple[int, int]]:
     each other: different fingers, and the thumb chain's non-adjacent segments.
     """
     geoms = [g for g in range(model.ngeom)
-             if model.geom_contype[g] != 0 and model.body(model.geom_bodyid[g]).name.startswith(f"{C.HAND_SIDE}_")]
+             if model.geom_contype[g] != 0 and model.body(model.geom_bodyid[g]).name.startswith("right_")]
     pairs = []
     for i, g1 in enumerate(geoms):
         b1 = model.geom_bodyid[g1]
@@ -237,7 +237,7 @@ def penetration_scan(episodes: int, seed: int = 0) -> None:
     rng = np.random.default_rng(seed)
     policy = ScriptedGraspPolicy()
 
-    hand_bodies = {b for b in range(model.nbody) if model.body(b).name.startswith(f"{C.HAND_SIDE}_")}
+    hand_bodies = {b for b in range(model.nbody) if model.body(b).name.startswith("right_")}
     self_pairs = _hand_self_pairs(model)
 
     deep = defaultdict(float)  # category -> deepest penetration (m, negative)
