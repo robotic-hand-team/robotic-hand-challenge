@@ -1,0 +1,75 @@
+# Reproduces the hackathon AI-evaluation build: a fresh checkout on plain Linux, no secrets, one build
+# picked by the first root file in the judges' order. Our root has docker-compose.yml, so that build is
+# `docker compose build`. A smoke test then starts the stack and checks that the dashboard really serves.
+name: Judge build check
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Which build the judges pick
+        run: |
+          for f in docker-compose.yml Dockerfile pnpm-lock.yaml yarn.lock package.json pyproject.toml \
+                   requirements.txt go.mod Cargo.toml pom.xml build.gradle Makefile; do
+            if [ -e "$f" ]; then echo "Judges build from: $f"; echo "**Judges build from:** \`$f\`" >> "$GITHUB_STEP_SUMMARY"; break; fi
+          done
+          echo "Runner: $(uname -sm), $(docker --version), $(docker compose version)"
+
+      - name: docker compose build (the judges' step)
+        run: |
+          start=$(date +%s)
+          docker compose build --progress plain
+          echo "**docker compose build:** passed in $(( $(date +%s) - start )) s" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Smoke test - start the stack
+        id: up
+        continue-on-error: true
+        run: |
+          docker compose up -d
+          for i in $(seq 1 60); do
+            state=$(docker inspect -f '{{.State.Health.Status}}' robotics-backend 2>/dev/null || echo missing)
+            echo "backend health: $state"; [ "$state" = healthy ] && break; sleep 5
+          done
+          [ "$state" = healthy ]
+
+      - name: Smoke test - endpoints
+        id: smoke
+        continue-on-error: true
+        run: |
+          fail=0
+          check() { # name, url, min bytes
+            code=$(curl -s -o /tmp/out -w '%{http_code}' --max-time 60 "$2"); size=$(stat -c %s /tmp/out 2>/dev/null || echo 0)
+            if [ "$code" = 200 ] && [ "$size" -ge "$3" ]; then r=pass; else r=FAIL; fail=1; fi
+            echo "| $1 | \`$2\` | $code | $size | $r |" >> "$GITHUB_STEP_SUMMARY"; echo "$1: $code, $size bytes, $r"
+          }
+          echo "| Check | URL | HTTP | Bytes | Result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| --- | --- | --- | --- | --- |" >> "$GITHUB_STEP_SUMMARY"
+          check "Backend health" http://localhost:8000/api/health 10
+          check "Session list" http://localhost:8000/api/sessions 100
+          check "Frontend page" http://localhost:3000/ 200
+          check "Twin model via nginx proxy" http://localhost:3000/api/twin.glb 100000
+          sid=$(curl -s http://localhost:8000/api/sessions | python3 -c "import sys,json; s=json.load(sys.stdin); print(s[0]['id'] if s else '')")
+          [ -n "$sid" ] && check "One session replay" "http://localhost:8000/api/sessions/$sid" 1000
+          curl -s http://localhost:8000/api/health; echo
+          exit $fail
+
+      - name: Container logs
+        if: always()
+        run: |
+          docker compose ps -a
+          docker compose logs --no-color backend | tail -60
+          docker compose logs --no-color frontend | tail -20
+
+      - name: Result
+        if: always()
+        run: |
+          echo "Smoke: start=${{ steps.up.outcome }}, endpoints=${{ steps.smoke.outcome }}" | tee -a "$GITHUB_STEP_SUMMARY"
+          docker compose down -v
