@@ -55,6 +55,7 @@ body {
 .brand { display: flex; align-items: center; gap: var(--s2); }
 .brand-logo { height: 40px; width: auto; display: block; }
 .brand-title { font-size: 20px; font-weight: 700; letter-spacing: 0.01em; }
+.brand-sub { font-size: 13px; color: var(--text-2); }
 .header-spacer { flex: 1; }
 .header-controls { display: flex; align-items: center; gap: var(--s1); }
 
@@ -115,39 +116,25 @@ body {
 .kpi-danger::before {
   content: ""; position: absolute; left: -1px; top: -1px; bottom: -1px; width: 3px; background: var(--danger);
 }
-/* Main answer card: what the hand holds and how sure the classifier is. */
-.held { gap: var(--s2); z-index: 2; }
-.held-top { display: flex; align-items: center; justify-content: space-between; gap: var(--s1); }
-.held-row { display: flex; align-items: center; gap: var(--s2); }
-.held-img { width: 72px; height: 96px; flex: none; display: flex; align-items: center; justify-content: center; }
+.held { flex-direction: row; align-items: center; gap: var(--s2); padding: var(--s1) var(--s3); z-index: 2; }
+.held-img { width: 88px; height: 72px; flex: none; display: flex; align-items: center; justify-content: center; }
 .held-img img { max-width: 100%; max-height: 100%; object-fit: contain; }
-.held-empty {
-  width: 56px; height: 80px; display: grid; place-items: center;
-  border: 2px dashed var(--border-strong); border-radius: var(--radius);
-  font-size: 28px; font-weight: 700; color: var(--text-3);
-}
-.held-text { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 0; }
-.held-name { font-size: 28px; font-weight: 700; line-height: 1.1; }
-.held-unknown .held-name { color: var(--text-2); }
+.held-empty { width: 56px; height: 56px; border: 2px dashed var(--border); border-radius: var(--radius); }
+.held-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.held-name { font-size: 20px; font-weight: 700; line-height: 1.15; }
 .held-blurb { font-size: 13px; color: var(--text-2); }
 .read-more {
-  all: unset; cursor: pointer; margin-top: 4px; font-size: 13px; font-weight: 700; color: var(--text);
-  text-decoration: underline; text-decoration-color: var(--yellow); text-decoration-thickness: 2px; text-underline-offset: 3px;
+  all: unset; cursor: pointer; font-size: 13px; font-weight: 700; white-space: nowrap;
+  color: var(--yellow);
+  background: linear-gradient(100deg, var(--yellow) 35%, #fff6b0 50%, var(--yellow) 65%) 200% 0 / 250% 100%;
+  -webkit-background-clip: text; background-clip: text;
+  animation: read-more-shine 2.8s linear infinite;
+  text-shadow: 0 0 10px color-mix(in srgb, var(--yellow) 45%, transparent);
 }
-.read-more:hover { text-decoration-color: var(--text); }
+.read-more:hover { text-decoration: underline; }
 .read-more:focus-visible { outline: 2px solid var(--yellow); outline-offset: 2px; }
-
-.conf { display: flex; flex-direction: column; gap: 6px; }
-.conf-head { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-2); }
-.conf-pct { font-size: 20px; letter-spacing: 0; color: var(--text); font-variant-numeric: tabular-nums; }
-.conf-bar { height: 8px; background: var(--surface-2); border-radius: var(--radius); overflow: hidden; }
-.conf-bar > span { display: block; height: 100%; background: var(--yellow); transition: width 200ms ease-out; }
-.conf-bar > .conf-fill-weak { background: repeating-linear-gradient(135deg, var(--yellow) 0 6px, #ffe680 6px 12px); }
-.conf-bar-idle { background: repeating-linear-gradient(135deg, var(--surface-2) 0 6px, var(--border) 6px 12px); }
-.held-meta { font-size: 13px; }
-.truth-ok { color: var(--text); }
-.truth-bad { color: var(--danger); font-weight: 700; }
-@media (prefers-reduced-motion: reduce) { .conf-bar > span { transition: none; } }
+@keyframes read-more-shine { to { background-position: -50% 0; } }
+@media (prefers-reduced-motion: reduce) { .read-more { animation: none; } }
 .held-more {
   position: absolute; left: 0; right: 0; top: calc(100% + 4px);
   background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--yellow);
@@ -242,5 +229,6 @@ body {
 }
 @media (max-width: 640px) {
   .header { padding: 0 var(--s2); gap: var(--s2); }
+  .brand-sub { display: none; }
   .kpis, .charts { grid-template-columns: 1fr; }
 }

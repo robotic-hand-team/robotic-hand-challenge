@@ -1,86 +1,28 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { SENSOR_INFO } from "../api.js";
 
 const fmt = (x, d = 1) => (x == null ? "–" : Number(x).toFixed(d));
-const TENTATIVE_BELOW = 0.7; // mean probability of the leading label; 0.5 is a coin flip
 
-// The challenge's main answer: which sensor the hand holds, how sure the classifier is, and (in replay)
-// whether that matches the simulation's ground truth. estimate = {label, confidence, agreement, n_votes} | null.
-function HeldObjectCard({ estimate, truth, noTactile }) {
+function HeldObjectCard({ estimate }) {
   const info = estimate ? SENSOR_INFO[estimate.label] : null;
   const [open, setOpen] = useState(false);
-  const ref = useRef(null);
-
-  useEffect(() => { if (!info) setOpen(false); }, [info]);
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e) => e.key === "Escape" && setOpen(false);
-    const onClick = (e) => !ref.current?.contains(e.target) && setOpen(false);
-    document.addEventListener("keydown", onKey);
-    document.addEventListener("pointerdown", onClick);
-    return () => { document.removeEventListener("keydown", onKey); document.removeEventListener("pointerdown", onClick); };
-  }, [open]);
-
-  if (!info) {
-    return (
-      <section className="card kpi held held-unknown" aria-label="Held object" aria-live="polite">
-        <span className="kpi-label">Holding</span>
-        <div className="held-row">
-          <div className="held-img"><span className="held-empty" aria-hidden="true">?</span></div>
-          <div className="held-text">
-            <span className="held-name">Unidentified</span>
-            <span className="held-blurb">
-              {noTactile
-                ? "No tactile data in this stream, so the classifier cannot vote."
-                : "Waiting for contact."}
-            </span>
-          </div>
-        </div>
-        <div className="conf">
-          <div className="conf-head"><span>Confidence</span><span className="conf-pct">–</span></div>
-          <div className="conf-bar conf-bar-idle" aria-hidden="true" />
-        </div>
-      </section>
-    );
-  }
-
-  const pct = Math.round(estimate.confidence * 100);
-  const tentative = estimate.confidence < TENTATIVE_BELOW;
-  const correct = truth ? truth === estimate.label : null;
   return (
-    <section ref={ref} className="card kpi held kpi-accent" aria-label="Held object" aria-live="polite">
-      <div className="held-top">
-        <span className="kpi-label">Holding</span>
-        <span className={`badge ${tentative ? "" : "badge-ok"}`}>{tentative ? "Tentative" : info.name}</span>
+    <section className="card kpi held" aria-label="Held object">
+      <div className="held-img">
+        {info ? <img src={info.image} alt={info.model} /> : <span className="held-empty" aria-hidden="true" />}
       </div>
-      <div className="held-row">
-        <div className="held-img"><img src={info.image} alt="" /></div>
-        <div className="held-text">
-          <span className="held-name">{info.model}</span>
-          <span className="held-blurb">{info.blurb}</span>
-          <button type="button" className="read-more" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
-            {open ? "Show less" : "Read more"}
-          </button>
-        </div>
+      <div className="held-text">
+        <span className="held-name">{info ? info.model : "No object"}</span>
+        {info && (
+          <span className="held-blurb">
+            {info.blurb}{" "}
+            <button type="button" className="read-more" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+              {open ? "Close" : "Read more"} <span aria-hidden="true">→</span>
+            </button>
+          </span>
+        )}
       </div>
-      <div className="conf">
-        <div className="conf-head">
-          <span>Confidence</span>
-          <span className="conf-pct">{pct}%</span>
-        </div>
-        <div className="conf-bar" role="meter" aria-label="Classifier confidence" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}>
-          <span className={tentative ? "conf-fill-weak" : ""} style={{ width: `${pct}%` }} />
-        </div>
-        <span className="kpi-sub held-meta">
-          {estimate.n_votes} {estimate.n_votes === 1 ? "frame" : "frames"} · {Math.round(estimate.agreement * 100)}% agree
-          {correct != null && (
-            <span className={correct ? "truth-ok" : "truth-bad"}>
-              {" · "}{correct ? "✓ matches ground truth" : `✗ truth: ${SENSOR_INFO[truth].model}`}
-            </span>
-          )}
-        </span>
-      </div>
-      {open && <div className="held-more" role="note">{info.more}</div>}
+      {info && open && <div className="held-more" role="note">{info.more}</div>}
     </section>
   );
 }
@@ -97,7 +39,7 @@ function PositionCard({ kpi, live }) {
       </div>
       <span className="kpi-sub">
         {live
-          ? "Tactile estimate (physics model, about ±25 mm) · palm +x, fingers +z"
+          ? "Approximate: default grasp position, shifted ≤ 20 mm by the tactile model · palm +x, fingers +z"
           : "Relative to the hand root · palm +x, fingers +z"}
       </span>
     </section>
@@ -146,7 +88,7 @@ export default function KpiCards({ frame, session, live, noTactile }) {
   const kpi = frame?.kpi;
   return (
     <div className="kpis">
-      <HeldObjectCard estimate={kpi?.sensor} truth={session?.truth} noTactile={noTactile} />
+      <HeldObjectCard estimate={kpi?.sensor} />
       <PositionCard kpi={kpi} live={live} />
       <OrientationCard kpi={kpi} />
       <GripCard kpi={kpi} contacts={frame?.contacts} phase={frame?.phase} />

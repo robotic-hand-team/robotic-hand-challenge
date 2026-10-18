@@ -1044,6 +1044,11 @@ class RotationGuard:
         self.push_since = None
         self.move_push_since = None
         self.release_angle = self.angles[-1][1] if self.angles else None
+        # forget the old target: until the hand reports the new one (a frame or two) the thumb
+        # would look stalled short of it, and the stall rule stopped it right away (auto close)
+        # (-1: no real angle, so the next update takes the reported target and restarts the clock;
+        # numeric, so a check running at the same time in the acquisition thread can't fail)
+        self.target, self.target_t = -1, time.time()
 
     def check(self, act, tactile):
         now, angle = time.time(), act["angle_act"][5]
@@ -1081,7 +1086,9 @@ class RotationGuard:
             self.push_since = None
         elif abs(act["current"][5]) > ROT_STOP_CURRENT and self.push_since is None:
             self.push_since = now
-        if state in ("RELEASING", "FAULTY", "PROBING"):   # PROBING moves the thumb on purpose
+        # off while opening, open (nothing to push; a stop written now only blocked the next Close,
+        # e.g. auto close while the thumb was still on its way to 1000), faulty or probing
+        if state in ("RELEASING", "OPENED", "FAULTY", "PROBING"):
             if self.reason:
                 print("Thumb rotation free again.")
             self.reason = ""

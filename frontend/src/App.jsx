@@ -121,7 +121,10 @@ export default function App() {
       <header className="header">
         <div className="brand">
           <img className="brand-logo" src="/logo_vega_bfl.png" alt="VEGA × Black Forest Labs" />
-          <div className="brand-title">Tactile Digital Twin</div>
+          <div>
+            <div className="brand-title">Tactile Digital Twin</div>
+            <div className="brand-sub">VEGA challenge · Inspire RH56DFTP · pose &amp; sensor estimation</div>
+          </div>
         </div>
         <div className="header-spacer" />
         <div className="header-controls">
