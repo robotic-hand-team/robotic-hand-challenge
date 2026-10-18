@@ -84,6 +84,12 @@ LIVE_GRASP_OFFSET = {
 # span y 74-132 mm) and just below the finger bases (z 136 mm), so the closing fingers wrap it.
 # fit_real_grasp's height (75 mm) put it under the curled fingers, low in front of the palm.
 LIVE_FIST_CENTER_MM = [float(v) for v in os.environ.get("LIVE_FIST_CENTER_MM", "103,118").split(",")]
+# Palm tactile sensor (8 rows x 14 columns) in the right-hand model frame, from the hand manual's diagram
+# (p.26): directly below the finger bases (z 136 mm), centred under the four fingers, about 60 x 34 mm,
+# i.e. ~4.3 mm taxel pitch. The object's axis is put through the centroid of the palm's pressure strip
+# (palm_axis.palm_point); along its axis the grip point stays as close to the fist centre as it can.
+PALM_SENSOR_CENTER_MM = (103.0, 113.0)
+PALM_SENSOR_PITCH_MM = 4.3
 # Nominal direction of each object's real-grasp pose (its grasp_quat): 29's connector towards the thumb
 # (0 deg), 38's head towards the little finger (180 deg).
 LIVE_GRIP_POINT = {"vegabar_29": [0.0, 0.0, 0.0], "vegabar_38": [-0.014, -0.045, 0.0]}

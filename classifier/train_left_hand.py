@@ -5,6 +5,9 @@ the live pipeline averages, backend/src/sessions.py HoldMeanSensorClassifier.vec
   sensor     Sensor A or B. Trained on the photo and the inferred labels; scored on the photo labels.
   direction  where the sensor's yellow end points in the palm plane, as an angle (0 deg = towards the
              thumb, 90 deg = towards the fingertips), regressed as (cos, sin). Photo labels only.
+             Live, its axis line is replaced by the palm's measured strip (backend/src/palm_axis.py) when
+             the palm shows one; the model then only decides which end is which. The palm's calibration
+             offset is fitted here and saved with the models.
 
 Run from the repo root:  python -m classifier.train_left_hand
 Writes final_model/left_hand_models.pkl.
@@ -16,7 +19,8 @@ import joblib
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 
-from classifier.left_hand_data import load
+from backend.src.palm_axis import fuse, palm_line, reliable, wrap90
+from classifier.left_hand_data import DATA_DIR, load, palm_hold_mean
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "final_model" / "left_hand_models.pkl"
@@ -61,13 +65,29 @@ def main():
         tr = np.arange(len(d)) != i
         c, s = direction_model().fit(Xd[tr], Y[tr]).predict(Xd[i:i + 1])[0]
         pred.append(np.degrees(np.arctan2(s, c)))
+    def summary(e):
+        return (f"median error {np.median(e):.0f} deg, {np.mean(e <= 30):.0%} within 30 deg, "
+                f"{np.mean(e > 90):.0%} pointing the wrong way")
+
     err = angle_error(pred, theta)
     fixed = angle_error(np.where(d["sensor"] == "A", 0.0, 180.0), theta)
-    direction_acc = (f"median error {np.median(err):.0f} deg, {np.mean(err <= 30):.0%} within 30 deg, "
-                     f"{np.mean(err > 135):.0%} pointing the wrong way")
-    print(f"direction, leave one grasp out: {direction_acc}")
-    print(f"  (old fixed pose: median error {np.median(fixed):.0f} deg, {np.mean(fixed <= 30):.0%} within 30 deg, "
-          f"{np.mean(fixed > 135):.0%} pointing the wrong way)")
+    print(f"direction, model only, leave one grasp out: {summary(err)}")
+    print(f"  (old fixed pose: {summary(fixed)})")
+
+    # palm axis line (backend/src/palm_axis.py): calibrate its offset against the photo labels, leave-one-out
+    palm = np.array([palm_line(palm_hold_mean(DATA_DIR / s)) for s in d["session"]])
+    line_true = wrap90(theta)
+    ok = np.array([np.isfinite(l) and reliable(e, t) for l, e, t in palm])
+    fused = []
+    for i in range(len(d)):
+        others = ok & (np.arange(len(d)) != i)
+        bias = float(np.median(wrap90(line_true[others] - palm[others, 0])))
+        fused.append(fuse(pred[i], *palm[i], bias))
+    err_fused = angle_error(fused, theta)
+    palm_bias = float(np.median(wrap90(line_true[ok] - palm[ok, 0])))
+    direction_acc = summary(err_fused)
+    print(f"direction, palm line + model end, leave one grasp out: {direction_acc} "
+          f"(palm line used on {ok.sum()}/{len(d)}, calibration offset {palm_bias:+.1f} deg)")
 
     bundle = {
         "features": FEATURES,
@@ -75,6 +95,7 @@ def main():
         "direction": direction_model().fit(Xd, Y),
         "sensor_loo": sensor_acc,
         "direction_loo": direction_acc,
+        "palm_bias_deg": palm_bias,
         "trained_on": f"models/dataset_left: {n} grasps for the sensor, {len(d)} with photo directions",
     }
     joblib.dump(bundle, OUT)

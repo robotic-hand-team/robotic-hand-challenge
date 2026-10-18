@@ -21,7 +21,7 @@ import pandas as pd
 
 from backend.src import live
 from backend.src.twin import Twin
-from classifier.left_hand_data import DATA_DIR, GROUPS, LABELS, hold_window, load_frames
+from classifier.left_hand_data import DATA_DIR, GROUPS, LABELS, PALM_COLS, hold_window, load_frames
 
 STATS = ("sum", "max", "contacts", "cy", "cx", "force")
 DOF = ["little", "ring", "middle", "index", "thumb_bend", "thumb_rot"]
@@ -43,6 +43,8 @@ def messages(session: Path):
     contacts = df[[f"{g}_contacts" for g in GROUPS]].fillna(0).sum(axis=1).to_numpy()
     after = np.flatnonzero((np.arange(len(df)) >= a) & (contacts <= live.C.MIN_CONTACTS_ACTIVE))
     b = int(after[0]) if len(after) else len(df)
+    palm = pd.read_csv(session / "tactile_raw.csv", usecols=["frame"] + PALM_COLS)
+    palm = df[["frame"]].merge(palm, on="frame", how="left").fillna(0)[PALM_COLS].to_numpy(int)
     for i, r in enumerate(df.itertuples(index=False)):
         r = r._asdict()
         tac = {g: {s: (None if (v := r.get(f"{g}_{s}")) is None or (isinstance(v, float) and math.isnan(v))
@@ -53,7 +55,7 @@ def messages(session: Path):
         state = "CLOSING" if i < a else "HOLD" if i < b else "OPENED"
         yield r["t_unix"], {"seq": i, "t": r["t_rel"], "angle": [int(r[f"angle_act_{d}"]) for d in DOF],
                             "force_act": [int(r[f"force_act_{d}"]) for d in DOF], "tactile": tac, "state": state,
-                            "hand_side": "left"}
+                            "palm": palm[i].tolist(), "hand_side": "left"}
 
 
 def angle_error(a, b):
@@ -79,11 +81,13 @@ def main():
             clock.t = t
             out = pipe.process(msg, ("replay", 0))
             if out["kpi"]["sensor"] and decided is None:
-                decided = (out["kpi"]["sensor"]["label"], out["kpi"]["direction_deg"], out["object"] is not None)
-        pred, theta, shown = decided or (None, None, False)
+                decided = (out["kpi"]["sensor"]["label"], out["kpi"]["direction_deg"], out["object"] is not None,
+                           out["kpi"].get("direction_source"))
+        pred, theta, shown, source = decided or (None, None, False, None)
         truth_theta = (math.degrees(math.atan2(lab["end_up"], lab["end_thumb"]))
                        if pd.notna(lab["end_thumb"]) else None)
         rows.append({"session": lab["session"][9:], "sensor": lab["sensor"], "pred": pred, "shown": shown,
+                     "dir_source": source,
                      "dir_true": truth_theta, "dir_pred": theta,
                      "dir_err": None if truth_theta is None or theta is None else angle_error(theta, truth_theta)})
     res = pd.DataFrame(rows)
@@ -91,6 +95,7 @@ def main():
     print(f"replayed {len(res)} sessions in {_time.time() - t0:.0f} s")
     print(f"decided: {res['pred'].notna().sum()}/{len(res)}, object drawn: {res['shown'].sum()}/{len(res)}")
     print(f"sensor agrees with the label: {ok.sum()}/{len(res)}")
+    print(f"direction from: {res['dir_source'].value_counts().to_dict()}")
     e = res["dir_err"].dropna().to_numpy(float)
     if len(e):
         print(f"direction: median error {np.median(e):.0f} deg, {np.mean(e <= 30):.0%} within 30 deg, "

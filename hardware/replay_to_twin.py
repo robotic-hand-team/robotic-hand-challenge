@@ -81,6 +81,7 @@ def main():
             }
             if not args.no_tactile:
                 msg.update(force_act=[int(a[f"force_act_{d}"]) for d in DOF], tactile=tactile,
+                           palm=[int(r[f"palm_r{y}_c{x}"]) for y in range(8) for x in range(14)],
                            hand_side=hand_side, ip=f"replay:{folder.name}")
             sock.sendto(json.dumps(msg).encode(), (args.host, args.port))
             seq += 1

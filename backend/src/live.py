@@ -35,6 +35,7 @@ import pandas as pd
 from scipy.spatial.transform import Rotation
 
 from . import config as C
+from .palm_axis import fuse, palm_line, palm_point, reliable
 from .sessions import DOF, OBJECT_LONG_AXIS, HoldMeanSensorClassifier, LeftHandModels, SensorClassifier
 from .twin import SC
 
@@ -96,7 +97,9 @@ class LivePipeline:
         self.decision = None         # (estimate, p_sensor_b, direction_deg | None): fixed once made
         self.quiet_since = None      # stateless streams: when contact was last lost
         self.hold_sum, self.hold_n = None, 0   # hold_mean: running sum of the grasp's feature rows
+        self.palm_sum, self.palm_n = None, 0   # the same frames' palm taxels (message field "palm")
         self.pre_rows = deque(maxlen=C.PRE_PROBE_FRAMES)   # last readings before probing
+        self.pre_palm = deque(maxlen=C.PRE_PROBE_FRAMES)
         self.probe_est = None        # {"p", "n", "t"}: estimate made at probing start
         self.pos = None
         self.pos_obj = None          # object the position history belongs to
@@ -136,19 +139,37 @@ class LivePipeline:
             return anchor
         return np.median(np.array([q for _, q in self.pos_hist]), axis=0)
 
-    def _direction(self, mean_vector):
-        """Direction of the yellow end in the palm plane (deg), when the sensor model provides one."""
+    def _direction(self, mean_vector, palm_mean=None):
+        """(direction of the yellow end in the palm plane in deg, source, palm point (y, z) mm | None)
+        when the sensor model provides a direction, else (None, None, None). The axis line comes from the
+        palm's pressure strip when it shows a clear one (palm_axis.fuse), the end from the model; without
+        a clear strip, both from the model. The palm point is where the strip lies (palm_axis.palm_point)."""
         f = getattr(self.hold_clf, "direction_deg", None)
-        return f(mean_vector) if f else None
+        if not f:
+            return None, None, None
+        model = f(mean_vector)
+        if palm_mean is None:
+            return model, "model", None
+        point = palm_point(palm_mean, C.PALM_SENSOR_CENTER_MM, C.PALM_SENSOR_PITCH_MM)
+        line, elong, total = palm_line(palm_mean)
+        if not (np.isfinite(line) and reliable(elong, total)):
+            return model, "model", point
+        return fuse(model, line, elong, total, self.hold_clf.palm_bias), "palm", point
 
-    def _directed_pose(self, obj: str, theta: float) -> np.ndarray:
-        """obj turned in the palm so its yellow end points theta (twin.pose_in_palm), cached in 2 deg steps:
-        the palm fit runs once per direction, not every frame."""
-        key = (obj, int(round(theta / 2.0)) * 2)
+    def _directed_pose(self, obj: str, theta: float, point_mm=None) -> np.ndarray:
+        """obj turned in the palm so its yellow end points theta (twin.pose_in_palm). Its axis runs over the
+        palm point when there is one, with the grip point as close to the fist centre as that allows; else
+        through the fist centre. Cached in 2 deg / 2 mm steps: the palm fit runs once per placement."""
+        grip_at = self.fist
+        if point_mm is not None:
+            p = np.asarray(point_mm, float) / 1000.0
+            u = np.array([np.cos(np.radians(theta)), np.sin(np.radians(theta))])
+            grip_at = p + np.dot(self.fist - p, u) * u
+        key = (obj, int(round(theta / 2.0)) * 2, *np.round(grip_at * 500).astype(int))   # 2 mm steps
         if key not in self._pose_cache:
             self._pose_cache[key] = self.twin.pose_in_palm(
                 obj, key[1], self.grasp_poses[obj], C.LIVE_NOMINAL_DIRECTION_DEG[obj],
-                C.LIVE_GRIP_POINT[obj], self.fist)
+                C.LIVE_GRIP_POINT[obj], np.array(key[2:]) / 500.0)
         return self._pose_cache[key]
 
     # --- models -------------------------------------------------------------------------------
@@ -203,13 +224,19 @@ class LivePipeline:
                     len(self.pre_rows) >= min(C.HOLD_MEAN_MIN_FRAMES, C.PRE_PROBE_FRAMES):
                 pre = np.mean(self.pre_rows, axis=0)
                 p = self.hold_clf.p_sensor_b(pre)
-                self.probe_est = {"p": p, "n": len(self.pre_rows), "t": now, "theta": self._direction(pre)}
+                pre_palm = np.mean(self.pre_palm, axis=0) if len(self.pre_palm) == len(self.pre_rows) else None
+                self.probe_est = {"p": p, "n": len(self.pre_rows), "t": now,
+                                  "theta": self._direction(pre, pre_palm)}
                 self.decision = None   # a probed grasp is decided by this estimate, not the hold mean
                 print(f"[live] probing started: P(sensor B) = {p:.3f} from the last "
                       f"{len(self.pre_rows)} readings, shown in {C.PROBE_ESTIMATE_DELAY_S:g} s")
             self.state, self.state_since = state, now
+        palm = msg.get("palm")
+        palm = np.asarray(palm, float) if palm is not None and len(palm) == 112 else None
         if self.hold_clf and state in ("CLOSING", "CONTACT") and contacts > C.MIN_CONTACTS_ACTIVE:
             self.pre_rows.append(self.hold_clf.vector(row))
+            if palm is not None:
+                self.pre_palm.append(palm)
         # predict only on a settled grasp: HOLD for at least PREDICT_AFTER_HOLD_S. With the hand
         # open, a few loaded taxels (sensor drift, the palm resting on something) must not produce
         # an estimate, and while closing the tactile picture is not the final grasp yet.
@@ -244,13 +271,18 @@ class LivePipeline:
                     v = self.hold_clf.vector(row)
                     self.hold_sum = v if self.hold_sum is None else self.hold_sum + v
                     self.hold_n += 1
+                    if palm is not None:
+                        self.palm_sum = palm if self.palm_sum is None else self.palm_sum + palm
+                        self.palm_n += 1
                 progress = min(1.0, self.hold_n / C.HOLD_MEAN_MIN_FRAMES)
                 if self.hold_n >= C.HOLD_MEAN_MIN_FRAMES:
                     mean = self.hold_sum / self.hold_n
+                    palm_mean = self.palm_sum / self.palm_n if self.palm_n == self.hold_n else None
                     p = self.hold_clf.p_sensor_b(mean)
                     label = "B" if p >= 0.5 else "A"
                     self.decision = ({"label": label, "confidence": round(p if label == "B" else 1 - p, 3),
-                                      "agreement": None, "n_votes": self.hold_n}, p, self._direction(mean))
+                                      "agreement": None, "n_votes": self.hold_n}, p,
+                                     self._direction(mean, palm_mean))
         else:
             p_b = self._classify(row) if active else None   # per-frame value, for the confidence chart
             if self.decision is None:
@@ -264,10 +296,11 @@ class LivePipeline:
                     conf = float(np.mean([q if label == "B" else 1 - q for q in self.probs]))
                     self.decision = ({"label": label, "confidence": round(conf, 3),
                                       "agreement": round(max(n_b, len(self.votes) - n_b) / len(self.votes), 3),
-                                      "n_votes": len(self.votes)}, p_b, None)
-        theta = None
+                                      "n_votes": len(self.votes)}, p_b, (None, None, None))
+        theta, theta_source, palm_pt = None, None, None
         if self.decision:
-            estimate, progress, theta = self.decision[0], 1.0, self.decision[2]
+            estimate, progress = self.decision[0], 1.0
+            theta, theta_source, palm_pt = self.decision[2]
             if self.hold_clf and (self.probe_est or active):
                 p_b = self.decision[1]
 
@@ -280,7 +313,7 @@ class LivePipeline:
             obj = LABEL_TO_OBJECT[estimate["label"]]
             if theta is not None:
                 # turned in the palm so the yellow end points the estimated way (left_hand direction model)
-                obj_pose = self._directed_pose(obj, theta)
+                obj_pose = self._directed_pose(obj, theta, palm_pt)
                 self.pos = obj_pose[:3]
             else:
                 shift = self._position(tac) if C.POS_MAX_OFFSET_MM > 0 else None   # unused at 0 mm
@@ -310,6 +343,8 @@ class LivePipeline:
                 "pos_mm": None if pos_rel is None else np.round(pos_rel, 1).tolist(),
                 "axis": None if axis is None else np.round(axis, 3).tolist(),
                 **self._orientation_kpi(theta if obj_pose is not None else None),
+                "direction_source": theta_source if obj_pose is not None else None,
+                "position_source": ("palm" if palm_pt is not None else "fist centre") if obj_pose is not None else None,
                 "grip_force_g": int(sum(force_act[:5])) if force_act else None,
                 "speed_mm_s": None,
                 "slipping": bool(slip.get("slipping")), "slip_text": slip.get("status", ""),

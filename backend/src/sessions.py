@@ -82,6 +82,7 @@ class LeftHandModels:
         bundle = joblib.load(path)
         self.features = list(bundle["features"])
         self.sensor, self.direction = bundle["sensor"], bundle["direction"]
+        self.palm_bias = float(bundle.get("palm_bias_deg", 0.0))   # palm_axis calibration offset
         self.index_b = list(self.sensor.classes_).index(1)
         self.name = f"final_model/{path.name} (sensor LOO {bundle['sensor_loo']})"
         self.direction_name = f"final_model/{path.name} (direction LOO {bundle['direction_loo']})"

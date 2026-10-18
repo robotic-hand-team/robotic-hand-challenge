@@ -66,6 +66,16 @@ def hold_mean(session: Path) -> pd.Series:
     return m
 
 
+PALM_COLS = [f"palm_r{r}_c{c}" for r in range(8) for c in range(14)]   # data order, as the GUI sends it
+
+
+def palm_hold_mean(session: Path):
+    """The palm's 112 taxels averaged over the hold window (offset-corrected, tactile_raw.csv)."""
+    raw = pd.read_csv(session / "tactile_raw.csv", usecols=["frame"] + PALM_COLS)
+    a, b = hold_window(load_frames(session))
+    return raw[PALM_COLS].iloc[a:b].mean().to_numpy(float)
+
+
 def load(sources=("photo", "inferred")) -> pd.DataFrame:
     """One row per labelled grasp: hold-mean columns + label columns."""
     labels = pd.read_csv(LABELS, dtype={"session": str})

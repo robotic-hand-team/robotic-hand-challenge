@@ -577,6 +577,9 @@ def broadcast(t, act, frozen, tactile):
         "angle_deg": [round(d0 + (d1 - d0) * a / 1000, 1) for a, (d0, d1) in zip(angles, ANGLE_DEG)],
         "force_act": act["force_act"],
         "tactile": tactile_summary(tactile),
+        # the palm's 112 taxels in data order (as tactile_raw.csv logs them): the dashboard measures the
+        # object's axis line from the pressure strip they show (backend/src/palm_axis.py)
+        "palm": tactile["Palm"].astype(int).ravel().tolist(),
         "state": hand["state"],
         "slip": {"slipping": bool(slip.reasons), "status": slip.status, "reasons": slip.reasons},
         "thumb_press": thumb_probe.snapshot(),
