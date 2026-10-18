@@ -84,9 +84,6 @@ The library index is cached in `final_model/library_index.pkl` after the first r
 | DTW within correct class | 100 % |
 | Combined end-to-end | **81.8 %** |
 
-Training data: 33 hand-labeled sessions from `20261017_17October_8pm`  
-Labels: `~/Documents/labelled_data/manual_labels.csv`
-
 ---
 
 ## Files
