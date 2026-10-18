@@ -73,6 +73,33 @@ class HoldMeanSensorClassifier:
         return float(self.model.predict_proba(X)[0, self.index_b])
 
 
+class LeftHandModels:
+    """final_model/left_hand_models.pkl (classifier/train_left_hand.py): random forests trained on the live
+    left hand's labelled grasps (models/dataset_left), on the same hold-mean vector as
+    HoldMeanSensorClassifier. Sensor A/B, and the direction the sensor's yellow end points in the palm."""
+
+    def __init__(self, path=C.LEFT_HAND_MODELS):
+        bundle = joblib.load(path)
+        self.features = list(bundle["features"])
+        self.sensor, self.direction = bundle["sensor"], bundle["direction"]
+        self.index_b = list(self.sensor.classes_).index(1)
+        self.name = f"final_model/{path.name} (sensor LOO {bundle['sensor_loo']})"
+        self.direction_name = f"final_model/{path.name} (direction LOO {bundle['direction_loo']})"
+
+    def vector(self, row: dict) -> np.ndarray:
+        """One frame's features in model order (missing / None -> 0), as in training."""
+        return np.array([row.get(c) or 0.0 for c in self.features], float)
+
+    def p_sensor_b(self, mean_vector: np.ndarray) -> float:
+        X = mean_vector.astype(np.float32).reshape(1, -1)
+        return float(self.sensor.predict_proba(X)[0, self.index_b])
+
+    def direction_deg(self, mean_vector: np.ndarray) -> float:
+        """Where the yellow end points in the palm plane: 0 deg = towards the thumb, 90 = the fingertips."""
+        c, s = self.direction.predict(mean_vector.astype(np.float32).reshape(1, -1))[0]
+        return float(np.degrees(np.arctan2(s, c)))
+
+
 @lru_cache(maxsize=1)
 def classifier() -> SensorClassifier | None:
     try:

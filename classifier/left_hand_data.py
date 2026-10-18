@@ -10,7 +10,6 @@ Run from the repo root: python -m classifier.left_hand_data   (prints a summary)
 """
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,9 +58,10 @@ def load_frames(session: Path) -> pd.DataFrame:
 def hold_mean(session: Path) -> pd.Series:
     df = load_frames(session)
     a, b = hold_window(df)
-    hold = df.iloc[a:b]
-    # cy/cx are blank (NaN) when a patch has < 2 contacts: average only where present, else 0
-    m = hold.mean(numeric_only=True).fillna(0.0)
+    # cy/cx are blank (NaN) when a patch has < 2 contacts. They count as 0 in every frame before averaging,
+    # exactly like the live pipeline (HoldMeanSensorClassifier.vector) and final_model/match_session.py.
+    hold = df.iloc[a:b].fillna(0.0)
+    m = hold.mean(numeric_only=True)
     m["hold_frames"] = len(hold)
     return m
 

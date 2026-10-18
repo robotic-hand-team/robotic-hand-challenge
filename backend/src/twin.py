@@ -11,6 +11,7 @@ import mujoco
 import numpy as np
 import trimesh
 from scipy.spatial import ConvexHull
+from scipy.spatial.transform import Rotation
 
 from . import config as C
 
@@ -193,6 +194,27 @@ class Twin:
                 if best is None or miss < best[0]:
                     best = (miss, pose)
         return best[1]
+
+    def pose_in_palm(self, obj, theta_deg, nominal_pose, nominal_theta_deg, grip, fist, gap=0.001):
+        """Object pose [x, y, z, qw, qx, qy, qz] with its yellow end (object +y) pointing theta_deg in the
+        palm plane (0 = towards the thumb, +y; 90 = towards the fingertips, +z): nominal_pose's orientation
+        (whose yellow end points nominal_theta_deg) turned about the palm normal (x), the object's grip
+        point (object frame, m) on the fist centre (y, z), and x so it rests `gap` off the drawn palm."""
+        w, qx, qy, qz = nominal_pose[3:]
+        R = (Rotation.from_euler("x", theta_deg - nominal_theta_deg, degrees=True)
+             * Rotation.from_quat([qx, qy, qz, w]))
+        y, z = np.asarray(fist, float) - R.apply(grip)[1:]
+        qx, qy, qz, w = R.as_quat()
+        quat = np.array([w, qx, qy, qz])
+        with self.lock:
+            self._set_qpos(np.full(6, 1000.0), obj, np.array([0.0, y, z, *quat]))
+            verts = np.vstack([
+                self.m.mesh_vert[self.m.mesh_vertadr[self.m.geom_dataid[g]]:self.m.mesh_vertadr[self.m.geom_dataid[g]]
+                                 + self.m.mesh_vertnum[self.m.geom_dataid[g]]]
+                @ self.d.geom_xmat[g].reshape(3, 3).T + self.d.geom_xpos[g] for g in self.obj_hulls[obj]])
+        margin = np.min(verts[:, 0] - self._palm_front(verts[:, 1:]))
+        x = gap - margin if np.isfinite(margin) else nominal_pose[0]   # nothing over the palm: keep nominal x
+        return np.array([x, y, z, *quat])
 
     def export_glb(self, path):
         """Write every visual mesh as one node per body (body-local coordinates, metres)."""

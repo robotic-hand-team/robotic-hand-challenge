@@ -12,13 +12,15 @@ Optional fields the dashboard uses when present:
 Per frame:
   hand pose      forward kinematics of the MuJoCo model from angle_act (always the right-hand model;
                  the dashboard mirrors it for the left hand, like simulation/hand_sim/left_hand.py)
-  sensor A/B     LIVE_SENSOR_MODEL "hold_mean" (default): final_model/sensor_classifier.pkl on the
-                 running mean of the grasp's settled hold frames, one estimate per grasp;
-                 "per_frame": xgb_sensor<LIVE_CLASSIFIER_SUFFIX>, majority vote over the grasp
-  object         the real-grasp pose (twin.fit_real_grasp: against the palm, where the fingers at
-                 the real hold angles touch it, plus the photo calibration LIVE_GRASP_OFFSET); the
-                 sim-trained ridge model may shift it by POS_MAX_OFFSET_MM (0 by default). The twin's
-                 fingers stop at the object's surface (LIVE_FINGER_CLAMP)
+  sensor A/B     LIVE_SENSOR_MODEL "left_hand" (default): final_model/left_hand_models.pkl on the
+                 running mean of the grasp's settled hold frames, one estimate per grasp; "hold_mean":
+                 final_model/sensor_classifier.pkl, same averaging; "per_frame": xgb_sensor<suffix>,
+                 majority vote over the grasp
+  object         "left_hand": turned in the palm so its yellow end points the estimated direction, its
+                 grip point on the fist centre, resting on the palm (twin.pose_in_palm). Other models:
+                 the nominal real-grasp pose (twin.fit_real_grasp plus LIVE_GRASP_OFFSET); the sim-trained
+                 ridge model may shift it by POS_MAX_OFFSET_MM (0 by default). The twin's fingers stop at
+                 the object's surface (LIVE_FINGER_CLAMP)
   slip           the GUI's own SlipDetector result
 """
 import asyncio
@@ -33,7 +35,7 @@ import pandas as pd
 from scipy.spatial.transform import Rotation
 
 from . import config as C
-from .sessions import DOF, OBJECT_LONG_AXIS, HoldMeanSensorClassifier, SensorClassifier
+from .sessions import DOF, OBJECT_LONG_AXIS, HoldMeanSensorClassifier, LeftHandModels, SensorClassifier
 from .twin import SC
 
 LABEL_TO_OBJECT = {v: k for k, v in C.OBJECT_TO_LABEL.items()}
@@ -56,7 +58,14 @@ class LivePipeline:
             print(f"[live] classifier unavailable: {e}")
             self.clf = None
         self.hold_clf = None
-        if C.LIVE_SENSOR_MODEL == "hold_mean":
+        if C.LIVE_SENSOR_MODEL == "left_hand":
+            try:
+                self.hold_clf = LeftHandModels()
+                print(f"[live] sensor model: {self.hold_clf.name}")
+                print(f"[live] direction model: {self.hold_clf.direction_name}")
+            except Exception as e:
+                print(f"[live] left-hand models unavailable ({e}) – trying the hold-mean classifier")
+        if self.hold_clf is None and C.LIVE_SENSOR_MODEL in ("left_hand", "hold_mean"):
             try:
                 self.hold_clf = HoldMeanSensorClassifier()
                 print(f"[live] sensor model: {self.hold_clf.name}")
@@ -71,6 +80,8 @@ class LivePipeline:
             print(f"[live] pose model unavailable: {e}")
             self.ridge = None
         self.grasp_poses = {o: self._real_grasp_pose(o) for o in C.OBJECT_TO_LABEL}
+        self.fist = np.array(C.LIVE_FIST_CENTER_MM, float) / 1000.0   # fist centre (y, z), metres
+        self._pose_cache = {}     # (object, direction in 2 deg steps) -> pose, see _directed_pose
         self.latest = None        # last processed frame for the dashboard
         self.last_rx = 0.0
         self.rate_hz = 0.0
@@ -82,7 +93,7 @@ class LivePipeline:
 
     def _reset_grasp(self):
         self.votes, self.probs = [], []
-        self.decision = None         # (estimate, p_sensor_b): the grasp's one decision, fixed once made
+        self.decision = None         # (estimate, p_sensor_b, direction_deg | None): fixed once made
         self.quiet_since = None      # stateless streams: when contact was last lost
         self.hold_sum, self.hold_n = None, 0   # hold_mean: running sum of the grasp's feature rows
         self.pre_rows = deque(maxlen=C.PRE_PROBE_FRAMES)   # last readings before probing
@@ -124,6 +135,21 @@ class LivePipeline:
         if not self.pos_hist:
             return anchor
         return np.median(np.array([q for _, q in self.pos_hist]), axis=0)
+
+    def _direction(self, mean_vector):
+        """Direction of the yellow end in the palm plane (deg), when the sensor model provides one."""
+        f = getattr(self.hold_clf, "direction_deg", None)
+        return f(mean_vector) if f else None
+
+    def _directed_pose(self, obj: str, theta: float) -> np.ndarray:
+        """obj turned in the palm so its yellow end points theta (twin.pose_in_palm), cached in 2 deg steps:
+        the palm fit runs once per direction, not every frame."""
+        key = (obj, int(round(theta / 2.0)) * 2)
+        if key not in self._pose_cache:
+            self._pose_cache[key] = self.twin.pose_in_palm(
+                obj, key[1], self.grasp_poses[obj], C.LIVE_NOMINAL_DIRECTION_DEG[obj],
+                C.LIVE_GRIP_POINT[obj], self.fist)
+        return self._pose_cache[key]
 
     # --- models -------------------------------------------------------------------------------
     def _classify(self, row: dict):
@@ -172,9 +198,12 @@ class LivePipeline:
             # a new Close (also straight from HOLD) is a new grasp – not the CLOSING after probing
             if state == "CLOSING" and self.state != "PROBING":
                 self._reset_grasp()
-            if state == "PROBING" and self.hold_clf and len(self.pre_rows) >= C.HOLD_MEAN_MIN_FRAMES:
-                p = self.hold_clf.p_sensor_b(np.mean(self.pre_rows, axis=0))
-                self.probe_est = {"p": p, "n": len(self.pre_rows), "t": now}
+            # pre_rows holds at most PRE_PROBE_FRAMES readings, so that is the most a probe can wait for
+            if state == "PROBING" and self.hold_clf and \
+                    len(self.pre_rows) >= min(C.HOLD_MEAN_MIN_FRAMES, C.PRE_PROBE_FRAMES):
+                pre = np.mean(self.pre_rows, axis=0)
+                p = self.hold_clf.p_sensor_b(pre)
+                self.probe_est = {"p": p, "n": len(self.pre_rows), "t": now, "theta": self._direction(pre)}
                 self.decision = None   # a probed grasp is decided by this estimate, not the hold mean
                 print(f"[live] probing started: P(sensor B) = {p:.3f} from the last "
                       f"{len(self.pre_rows)} readings, shown in {C.PROBE_ESTIMATE_DELAY_S:g} s")
@@ -207,7 +236,7 @@ class LivePipeline:
                 p = self.probe_est["p"]
                 label = "B" if p >= 0.5 else "A"
                 self.decision = ({"label": label, "confidence": round(p if label == "B" else 1 - p, 3),
-                                  "agreement": None, "n_votes": self.probe_est["n"]}, p)
+                                  "agreement": None, "n_votes": self.probe_est["n"]}, p, self.probe_est["theta"])
         elif self.hold_clf:
             # one estimate per grasp from the mean over its settled hold frames (as trained)
             if self.decision is None:
@@ -217,10 +246,11 @@ class LivePipeline:
                     self.hold_n += 1
                 progress = min(1.0, self.hold_n / C.HOLD_MEAN_MIN_FRAMES)
                 if self.hold_n >= C.HOLD_MEAN_MIN_FRAMES:
-                    p = self.hold_clf.p_sensor_b(self.hold_sum / self.hold_n)
+                    mean = self.hold_sum / self.hold_n
+                    p = self.hold_clf.p_sensor_b(mean)
                     label = "B" if p >= 0.5 else "A"
                     self.decision = ({"label": label, "confidence": round(p if label == "B" else 1 - p, 3),
-                                      "agreement": None, "n_votes": self.hold_n}, p)
+                                      "agreement": None, "n_votes": self.hold_n}, p, self._direction(mean))
         else:
             p_b = self._classify(row) if active else None   # per-frame value, for the confidence chart
             if self.decision is None:
@@ -234,9 +264,10 @@ class LivePipeline:
                     conf = float(np.mean([q if label == "B" else 1 - q for q in self.probs]))
                     self.decision = ({"label": label, "confidence": round(conf, 3),
                                       "agreement": round(max(n_b, len(self.votes) - n_b) / len(self.votes), 3),
-                                      "n_votes": len(self.votes)}, p_b)
+                                      "n_votes": len(self.votes)}, p_b, None)
+        theta = None
         if self.decision:
-            estimate, progress = self.decision[0], 1.0
+            estimate, progress, theta = self.decision[0], 1.0, self.decision[2]
             if self.hold_clf and (self.probe_est or active):
                 p_b = self.decision[1]
 
@@ -247,11 +278,17 @@ class LivePipeline:
         obj, obj_pose, pos_rel, axis = None, None, None, None
         if estimate and active:
             obj = LABEL_TO_OBJECT[estimate["label"]]
-            shift = self._position(tac) if C.POS_MAX_OFFSET_MM > 0 else None   # unused at 0 mm
-            self.pos = self._held_position(obj, shift, now)
-            if self.pos is not None:
-                q = self.grasp_poses[obj][3:]  # real-grasp orientation (w, x, y, z)
-                obj_pose = np.array([*self.pos, *q])
+            if theta is not None:
+                # turned in the palm so the yellow end points the estimated way (left_hand direction model)
+                obj_pose = self._directed_pose(obj, theta)
+                self.pos = obj_pose[:3]
+            else:
+                shift = self._position(tac) if C.POS_MAX_OFFSET_MM > 0 else None   # unused at 0 mm
+                self.pos = self._held_position(obj, shift, now)
+                if self.pos is not None:
+                    obj_pose = np.array([*self.pos, *self.grasp_poses[obj][3:]])  # real-grasp orientation
+            if obj_pose is not None:
+                q = obj_pose[3:]  # (w, x, y, z)
                 axis = Rotation.from_quat([q[1], q[2], q[3], q[0]]).apply(OBJECT_LONG_AXIS)
                 pos_rel = (self.pos - self.root) * 1000
                 if self.hand_side == "left":  # report in the left hand's own (mirrored) frame
@@ -272,13 +309,28 @@ class LivePipeline:
                 "analysis_progress": round(progress, 3),
                 "pos_mm": None if pos_rel is None else np.round(pos_rel, 1).tolist(),
                 "axis": None if axis is None else np.round(axis, 3).tolist(),
-                "tilt_deg": None, "orientation": "nominal",
+                **self._orientation_kpi(theta if obj_pose is not None else None),
                 "grip_force_g": int(sum(force_act[:5])) if force_act else None,
                 "speed_mm_s": None,
                 "slipping": bool(slip.get("slipping")), "slip_text": slip.get("status", ""),
             },
         }
         return self.latest
+
+    @staticmethod
+    def _orientation_kpi(theta) -> dict:
+        """Orientation KPIs. theta: where the yellow end points in the palm plane (0 deg = the thumb,
+        90 = the fingertips), or None (no direction estimate: the object keeps its nominal orientation).
+        tilt_deg = angle of the long axis against the across-the-palm line, 0-90."""
+        if theta is None:
+            return {"tilt_deg": None, "orientation": "nominal", "direction_deg": None, "direction_text": None}
+        t = (theta + 180.0) % 360.0 - 180.0
+        tilt = abs((t + 90.0) % 180.0 - 90.0)
+        side = "thumb" if abs(t) < 90 else "little finger"
+        if tilt >= 60:
+            side = "fingertips" if t > 0 else "wrist"
+        return {"tilt_deg": round(tilt, 1), "orientation": "estimated", "direction_deg": round(t, 1),
+                "direction_text": f"yellow end towards the {side}"}
 
     def status(self) -> dict:
         age = time.time() - self.last_rx if self.last_rx else None
@@ -287,7 +339,8 @@ class LivePipeline:
                 "udp": f"{C.LIVE_UDP_HOST}:{C.LIVE_UDP_PORT}", "has_tactile": self.has_tactile,
                 "classifier": (self.hold_clf.name if self.hold_clf else
                                f"xgb_sensor{C.LIVE_CLASSIFIER_SUFFIX}" if self.clf else None),
-                "pose_model": "physics_pose_ridge" if self.ridge else None}
+                "pose_model": (getattr(self.hold_clf, "direction_name", None)
+                               or ("physics_pose_ridge" if self.ridge else None))}
 
 
 class _Udp(asyncio.DatagramProtocol):
