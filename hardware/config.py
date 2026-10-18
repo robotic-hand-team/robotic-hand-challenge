@@ -1,7 +1,6 @@
 import tkinter as tk
 from pymodbus.client import ModbusTcpClient
 import numpy as np
-from PIL import Image, ImageTk
 import os
 import csv
 import json
@@ -80,11 +79,38 @@ THUMB_ROT_SLOW_SPEED = 100 # ... and then to 1000 at this speed (0–1000) befor
 THUMB_DONE_TIMEOUT_S = 8.0 # the index waits for that rotation to stop (target or object), at most this
 STAGE_DELAY_MS = 300       # pause between the Close stages
 THUMB_RETURN_WAIT_MS = 1000  # Close: wait after the middle closes before the thumb rotates to 1000
-STAGE_WAIT_S = 3.0         # a stage waits at most this long for every finger to press < WRITE_SAFE_FORCE
+ANSWER_WAIT_S = 0.2        # Close / probe writes wait at most this long for the hand to answer the
+                           # previous write (normally < 0.1 s), then go out anyway: nothing stops on
+                           # finger load or frozen motor data (freeze risk accepted)
+# "Read Thumb Press" (checkbox): the index closes gently; once it has settled and only if the
+# thumb rotation is open, the thumb opens (rotation and bend 1000) and presses with the bend at
+# each rotation below; then the full grip, the thumb pressing at the best contact. Not open:
+# the full grip right away
+THUMB_PROBE_ROTS = [950, 900, 850, 800, 750]
+THUMB_PROBE_ROT_OPEN = 800 # probing only when the thumb rotation is above this after its slow way
+                           # to 1000 (free it reaches 992–1000); stopped at or below it: skip
+THUMB_PROBE_FORCE = 400    # thumb bend force_set while probing: the hand stops the press itself at
+                           # this (moving freely the bend reads 120–230 g), so no stop write is needed
+THUMB_PROBE_SPEED = 400    # thumb bend speed while probing (1000 = full stroke in ~0.6 s)
+THUMB_PROBE_THRESHOLD = 100  # thumb taxel value above baseline that counts as contact ...
+THUMB_PROBE_TAXELS = 3     # ... on at least this many thumb taxels
+THUMB_PROBE_END = 50       # bend stopped above this with no sensor contact = touched with a part
+                           # that has no sensors ("force only"); at or below = "none"
+THUMB_PROBE_MOVE_S = 4.0   # a single thumb move is waited for at most this long
+THUMB_PROBE_ROT_TOL = 10   # a probe rotation counts as arrived within this of its target
+THUMB_PROBE_ROT_FORCE = 1000  # thumb rotation force_set while probing (FORCE_LIMIT_THUMB_ROT
+                           # otherwise), so the rotation isn't held short of its target
+THUMB_PROBE_MAX_S = 45.0   # the whole probe at most this long, then the full grip follows anyway
 FORCE_LIMIT_THUMB_BEND = 1000  # force_set of thumb bending
 FORCE_LIMIT_THUMB_ROT = 100    # force_set of thumb rotation: low, so it stops softly on the object
                                # (its force reading at rest has been ~50, but also ~440 – then it can't move)
 OPEN_FORCE_LIMIT = 3000    # force_set while opening: releasing squeezes nothing (hand default)
+# "Wave hi" button: the fingers bend one after the other (index -> little, then back), then open
+WAVE_BEND = 300            # how far each finger bends (0 = closed, 1000 = open)
+WAVE_STEP_MS = 150         # time between two fingers (each stays bent for two steps)
+WAVE_CYCLES = 2            # ripples (alternating direction)
+WAVE_SPEED = 1000          # finger speed while waving (back to normal once the hand is open)
+WAVE_FORCE = 1000          # finger force limit while waving: gentle if something is in the way
 SPEED_FINGERS = 500        # speed_set of the fingers (0–1000; 1000 = full stroke in ~0.6 s);
                            # slower = less force overshoot when a finger hits the object
 SPEED_THUMB = 1000          # slower thumb: gentler contact, lower current, time for the guard to react
@@ -145,10 +171,12 @@ FREEZE_S = 0.3             # motor feedback unchanged this long while frames kee
                            # the logs, bar two runs of 0.41/0.44 s)
 MOVE_TIMEOUT_S = 3.0      # opening/closing that takes longer than this -> warning (not FAULTY)
 ERROR_CLEAR_GRACE_S = 0.5  # ignore error flags this long after clearing them
-STALL_RETRIES = 3          # a stall-only fault is cleared and the move sent again at most this often
-STALL_RETRY_WINDOW_S = 10.0  # ... within this long; one more and the hand goes FAULTY as before
-                           # (logs/20261017_201853: the index flagged a stall while idle and open,
-                           # stayed in status 7, and moved normally on the next command)
+FAULT_RETRY_INTERVAL_S = 1.0  # any fault flag (stall, over-current, motor fault, comm error,
+                           # over-temperature) is cleared and the current move sent again, at most
+                           # this often – the hand never goes FAULTY or stops on its own
+                           # (logs/20261017_201853: after a stall the index stayed in status 7 and
+                           # moved normally on the next command). Over-temperature can't be cleared
+                           # (manual 2.6.3): the hand itself holds that motor until it has cooled
 
 # UDP broadcast of the real hand position: one JSON message per acquisition frame (~40 Hz)
 BROADCAST_ENABLED = True
@@ -169,59 +197,39 @@ DOF_KEYS = ["little", "ring", "middle", "index", "thumb_bend", "thumb_rot"]
 # ----------------------------
 root = tk.Tk()
 root.title("Gripper Hand – with Position Memory")
-root.geometry("1200x900")
 
 left_frame = tk.Frame(root)
 left_frame.pack(side="left", fill="y", padx=10)
 
-right_frame = tk.Frame(root)
-right_frame.pack(side="right", fill="both", expand=True)
-
 # ----------------------------
-# Image
+# SENSOR LAYOUT
 # ----------------------------
-img = Image.open(os.path.join(BASE_DIR, "hand.png"))
-img = img.resize((700, 900))
-hand_img = ImageTk.PhotoImage(img)
-
-# ----------------------------
-# SENSOR LAYOUT (UNCHANGED)
-# ----------------------------
+# name, register address, rows, cols, finger
 sensor_groups = [
-    ("Little Tip", 3000, 3, 3, "Little", (8, 10)),
-    ("Little Nail", 3018, 12, 8, "Little", (-2, 40)),
-    ("Little Pad", 3210, 10, 8, "Little", (4, 190)),
+    ("Little Tip", 3000, 3, 3, "Little"),
+    ("Little Nail", 3018, 12, 8, "Little"),
+    ("Little Pad", 3210, 10, 8, "Little"),
 
-    ("Ring Tip", 3370, 3, 3, "Ring", (-9, -20)),
-    ("Ring Nail", 3388, 12, 8, "Ring", (-23, 30)),
-    ("Ring Pad", 3580, 10, 8, "Ring", (-18, 200)),
+    ("Ring Tip", 3370, 3, 3, "Ring"),
+    ("Ring Nail", 3388, 12, 8, "Ring"),
+    ("Ring Pad", 3580, 10, 8, "Ring"),
 
-    ("Middle Tip", 3740, 3, 3, "Middle", (-21, -25)),
-    ("Middle Nail", 3758, 12, 8, "Middle", (-39, 22)),
-    ("Middle Pad", 3950, 10, 8, "Middle", (-35, 210)),
+    ("Middle Tip", 3740, 3, 3, "Middle"),
+    ("Middle Nail", 3758, 12, 8, "Middle"),
+    ("Middle Pad", 3950, 10, 8, "Middle"),
 
-    ("Index Tip", 4110, 3, 3, "Index", (-38, -19)),
-    ("Index Nail", 4128, 12, 8, "Index", (-49, 17)),
-    ("Index Pad", 4320, 10, 8, "Index", (-54, 200)),
+    ("Index Tip", 4110, 3, 3, "Index"),
+    ("Index Nail", 4128, 12, 8, "Index"),
+    ("Index Pad", 4320, 10, 8, "Index"),
 
-    ("Thumb Tip", 4480, 3, 3, "Thumb", (185, 140)),
-    ("Thumb Nail", 4498, 12, 8, "Thumb", (145, 170)),
-    ("Thumb Mid", 4690, 3, 3, "Thumb", (90, 240)),
-    ("Thumb Pad", 4708, 12, 8, "Thumb", (-30, 240)),
+    ("Thumb Tip", 4480, 3, 3, "Thumb"),
+    ("Thumb Nail", 4498, 12, 8, "Thumb"),
+    ("Thumb Mid", 4690, 3, 3, "Thumb"),
+    ("Thumb Pad", 4708, 12, 8, "Thumb"),
 
-    ("Palm", 4900, 8, 14, "Palm", (-15, 0))
+    ("Palm", 4900, 8, 14, "Palm")
 ]
 
-offsets = {
-    "Little": (150, 120),
-    "Ring":   (230, 110),
-    "Middle": (310, 100),
-    "Index":  (390, 110),
-    "Thumb":  (420, 360),
-    "Palm":   (240, 520)
-}
-
-pixel = 6
 sensor_offsets = {}
 calibrated = False
 
@@ -291,7 +299,7 @@ def read_tactile_raw():
         return None
     words = np.array(words)
     raw = {}
-    for name, addr, h, w, key, rel in sensor_groups:
+    for name, addr, h, w, _ in sensor_groups:
         i = (addr - TACTILE_START) // 2
         raw[name] = words[i:i+h*w]
     return raw
@@ -299,7 +307,7 @@ def read_tactile_raw():
 def correct_tactile(raw):
     """Subtracts calibration offsets, returns {name: matrix >= 0}."""
     frames = {}
-    for name, addr, h, w, key, rel in sensor_groups:
+    for name, addr, h, w, _ in sensor_groups:
         m = (raw[name] - sensor_offsets.get(name, 0)).reshape(h, w)
         m[m < 0] = 0
         frames[name] = m
@@ -387,7 +395,7 @@ class DataLogger:
                 "calibrated": calibrated,
                 "sensor_groups": [
                     {"name": n, "addr": a, "rows": h, "cols": w, "finger": k}
-                    for n, a, h, w, k, _ in sensor_groups
+                    for n, a, h, w, k in sensor_groups
                 ],
                 "offsets": {n: np.round(np.asarray(o), 2).tolist() for n, o in sensor_offsets.items()},
             }
@@ -514,7 +522,7 @@ def acquisition_loop():
             if t - act_changed_t <= FREEZE_S:      # no decisions on frozen motor data
                 rot_guard.update(act, tactile, hand["state"])
             slip.update(act, tactile, hand["state"], hand["since"], t - act_changed_t <= FREEZE_S)
-            broadcast(t, act, t - act_changed_t > FREEZE_S)
+            broadcast(t, act, t - act_changed_t > FREEZE_S, tactile)
 
             if last_t is not None:   # smoothed actual rate for the GUI
                 stats["rate_hz"] = 0.9 * stats["rate_hz"] + 0.1 / max(1e-6, t - last_t)
@@ -538,21 +546,40 @@ broadcast_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 broadcast_sock.setblocking(False)       # never hold up the acquisition thread
 broadcast_state = {"seq": 0, "error_printed": False}
 
-def broadcast(t, act, frozen):
-    """Sends the real joint angles (0–1000 and degrees), the hand state, the slip status and
-    whether the motor data is frozen (then the angles are the last live ones) as one JSON UDP
-    datagram to BROADCAST_HOST:BROADCAST_PORT."""
+def tactile_summary(tactile):
+    """Per sensor group, like tactile_summary.csv: {"little_tip": {sum, max, contacts, cy, cx, force}}."""
+    out = {}
+    for name, *_ in sensor_groups:
+        m = tactile[name]
+        n, cy, cx, force = contact_info(m)
+        out[name.lower().replace(" ", "_")] = {
+            "sum": int(m.sum()), "max": int(m.max()), "contacts": n,
+            "cy": None if cy is None else round(cy, 2),
+            "cx": None if cx is None else round(cx, 2),
+            "force": round(force, 1)}
+    return out
+
+def broadcast(t, act, frozen, tactile):
+    """Sends the real joint angles (0–1000 and degrees), the hand state, the slip status,
+    whether the motor data is frozen (then the angles are the last live ones), the finger forces
+    and the tactile summary as one JSON UDP datagram to BROADCAST_HOST:BROADCAST_PORT.
+    The dashboard backend (backend/src/live.py) uses force_act for the grip force KPI and the
+    tactile summary for the sensor A/B estimate and the object position."""
     if not BROADCAST_ENABLED:
         return
     angles = act["angle_act"]
     msg = {
         "t": round(t, 3),
         "seq": broadcast_state["seq"],
+        "ip": IP,
         "dof": DOF_KEYS,
         "angle": angles,
         "angle_deg": [round(d0 + (d1 - d0) * a / 1000, 1) for a, (d0, d1) in zip(angles, ANGLE_DEG)],
+        "force_act": act["force_act"],
+        "tactile": tactile_summary(tactile),
         "state": hand["state"],
         "slip": {"slipping": bool(slip.reasons), "status": slip.status, "reasons": slip.reasons},
+        "thumb_press": thumb_probe.snapshot(),
         "frozen": frozen,
     }
     broadcast_state["seq"] += 1
@@ -638,16 +665,17 @@ def write_shorts(addr, values, force=False):
 
 errors_cleared_at = 0.0
 
-def clear_errors():
+def clear_errors(quiet=False):
     global errors_cleared_at
     if write_shorts(CLEAR_ERROR_ADDR, [1], force=True):
         errors_cleared_at = time.time()
-        print("Cleared hand error flags.")
+        if not quiet:
+            print("Cleared hand error flags.")
 
-def set_force_limit(value=None):
+def set_force_limit(value=None, force=False):
     """Fingers: value (without one: the Grip force slider). Thumb: FORCE_LIMIT_THUMB_BEND and
     FORCE_LIMIT_THUMB_ROT."""
-    write_shorts(ACT_SHORT_FIELDS["force_set"][0], grasp_limits(value))
+    write_shorts(ACT_SHORT_FIELDS["force_set"][0], grasp_limits(value), force)
 
 def grasp_limits(value=None):
     value = int(force_slider.get() if value is None else value)
@@ -684,8 +712,8 @@ def write_pose(angles, limits, force=False):
         s.set(a)
     write_shorts(ACT_SHORT_FIELDS["angle_set"][0], list(angles) + list(limits), force)
 
-def set_speeds(fingers=SPEED_FINGERS, thumb_rot=SPEED_THUMB, force=False):
-    write_shorts(ACT_SHORT_FIELDS["speed_set"][0], [fingers] * 4 + [SPEED_THUMB, thumb_rot], force)
+def set_speeds(fingers=SPEED_FINGERS, thumb_rot=SPEED_THUMB, force=False, thumb_bend=SPEED_THUMB):
+    write_shorts(ACT_SHORT_FIELDS["speed_set"][0], [fingers] * 4 + [thumb_bend, thumb_rot], force)
 
 def hold_position(act):
     """Stop driving: every target becomes the measured angle, so the motors stop pushing
@@ -721,12 +749,12 @@ def cancel_pending_moves():
     pending_moves.clear()
 
 def run_stages(stages):
-    """stages: list of (action, wait_ms[, ready[, send_loaded]]): action is {dof_index: angle} or
-    a function to call; the next stage follows wait_ms later. With ready (a function), the stage
-    first waits up to THUMB_DONE_TIMEOUT_S for ready() to be true. A stage only goes out while
-    every finger presses less than WRITE_SAFE_FORCE: it waits up to STAGE_WAIT_S for that, then
-    the sequence stops there. A send_loaded stage doesn't wait: it goes out right away, with a
-    warning if a finger is loaded."""
+    """stages: list of (action, wait_ms[, ready[, send_loaded[, ready_timeout_s]]]): action is
+    {dof_index: angle} or a function to call; the next stage follows wait_ms later. With ready
+    (a function), the stage first waits up to ready_timeout_s (default THUMB_DONE_TIMEOUT_S) for
+    ready() to be true. Nothing stops a stage: it goes out with a finger loaded (warning) and on
+    frozen motor data, after waiting at most ANSWER_WAIT_S for the hand to answer the previous
+    write. (send_loaded is kept for the stage format; every stage is sent loaded now.)"""
     cancel_pending_moves()
     def apply(k, due=None, load_due=None):
         pending_moves.clear()       # this stage is running now
@@ -734,33 +762,22 @@ def run_stages(stages):
         with latest_lock:
             frozen = now - latest["t"] > 0.5 or latest["t"] - latest["act_changed_t"] > FREEZE_S
             answered = latest["act_changed_t"] > last_write_t
-        if not frozen and not answered:
-            # the motor readings haven't changed since the last write yet (normally < 0.1 s):
-            # a write into the first FREEZE_S of a freeze would only queue up (logs/203103)
+        if not answered and now - last_write_t < ANSWER_WAIT_S:
+            # give the hand a moment to answer the last write (normally < 0.1 s), never longer
             pending_moves.append(root.after(30, apply, k, due, load_due))
             return
         if frozen:
-            # nothing to decide on (and a write now would only queue up): wait for live motor
-            # data, then this stage's waits start over
-            warn_hand_state(f"close paused before stage {k + 1}/{len(stages)}: motor data frozen")
-            pending_moves.append(root.after(100, apply, k))
-            return
+            warn_hand_state(f"motor data frozen – close carries on (stage {k + 1}/{len(stages)})")
         due = now if due is None else due
-        action, wait_ms, ready, send_loaded = (tuple(stages[k]) + (None, False))[:4]
-        if ready is not None and not ready() and now - due < THUMB_DONE_TIMEOUT_S:
+        stage = tuple(stages[k])
+        action, wait_ms, ready, send_loaded, ready_timeout = (
+            stage + (None, False, THUMB_DONE_TIMEOUT_S)[len(stage) - 2:])
+        if ready is not None and not ready() and now - due < ready_timeout:
             pending_moves.append(root.after(100, apply, k, due, load_due))   # keep both waits
             return
         with latest_lock:
             act = latest["actuators"]
         if act is not None and finger_load(act) >= WRITE_SAFE_FORCE:
-            if not send_loaded:
-                load_due = now if load_due is None else load_due
-                if now - load_due < STAGE_WAIT_S:
-                    pending_moves.append(root.after(100, apply, k, due, load_due))
-                    return
-                warn_hand_state(f"close stopped before stage {k + 1}/{len(stages)}: "
-                                f"a finger presses {finger_load(act)} g")
-                return
             print(f"WARNING: Close stage {k + 1}/{len(stages)} sent while a finger presses "
                   f"{finger_load(act)} g – this write can freeze the hand (then Open only "
                   "works once the object is taken out).")
@@ -771,7 +788,7 @@ def run_stages(stages):
                 rot_guard.release()
             for i, v in action.items():
                 sliders[i].set(v)
-            write_angles()
+            write_angles(force=True)
         if k + 1 < len(stages):
             pending_moves.append(root.after(wait_ms, apply, k + 1))
     apply(0)
@@ -803,17 +820,18 @@ def close_hand():
     index. The fingers close with only CLOSE_FORCE_LIMIT until the last stage, which closes the
     index and sets the full grip force in one write: every stage is a write, and writes while a
     finger grips hard can freeze the hand. The last two stages go out even then (with a
-    warning). The speeds go back to normal once the hand is open again."""
-    if motion_blocked():
+    warning). The speeds go back to normal once the hand is open again. Nothing stops it: not a
+    finger already gripping, not finger load, not frozen motor data (freeze risk accepted)."""
+    if motion_blocked(gripping_ok=True):
         return
-    set_speeds()
-    set_force_limit(CLOSE_FORCE_LIMIT)
+    set_speeds(force=True)
+    set_force_limit(CLOSE_FORCE_LIMIT, force=True)
     def middle():
         sliders[2].set(0)
-        write_angles()
+        write_angles(force=True)
         # the slow thumb speed goes out now, while the fingers are still moving (180–330 g in the
         # logs), not with the thumb stage below when they grip: one write less under load
-        set_speeds(thumb_rot=THUMB_ROT_SLOW_SPEED)
+        set_speeds(thumb_rot=THUMB_ROT_SLOW_SPEED, force=True)
     def thumb_slow():
         # run_stages has already waited for the load; it goes out even at full load (force=True)
         with latest_lock:
@@ -829,15 +847,77 @@ def close_hand():
         # run_stages has already waited for the load; it goes out even at full load (force=True)
         sliders[3].set(0)
         write_shorts(ACT_SHORT_FIELDS["angle_set"][0], target_angles() + grasp_limits(), force=True)
+    def index_only():
+        # Read Thumb Press: the index closes with CLOSE_FORCE_LIMIT; the full grip follows the probe
+        sliders[3].set(0)
+        write_angles(force=True)
+    def start_probe():
+        # the index has closed and settled: probe only if the thumb rotation is open
+        reason = thumb_probe.skip_reason()
+        if reason:
+            thumb_probe.skip(reason)
+            return
+        set_hand_state("PROBING")
+        thumb_probe.start()
+    def full_grip_after_probe():
+        if thumb_probe.skipped:     # no probe: the full grip, thumb where it is
+            index_full_grip()
+            return
+        # the thumb has pulled back at its best rotation; it presses there with the full grip
+        rot_guard.release()
+        sliders[4].set(0)
+        sliders[5].set(thumb_probe.final_rot)
+        set_hand_state("CLOSING")
+        write_shorts(ACT_SHORT_FIELDS["angle_set"][0], [s.get() for s in sliders] + grasp_limits(),
+                     force=True)
     set_hand_state("CLOSING")
-    run_stages([
+    stages = [
         ({5: 0, 4: 0}, STAGE_DELAY_MS),
         ({0: 0, 1: 0}, STAGE_DELAY_MS),
         ({5: THUMB_ROT_MID}, STAGE_DELAY_MS),
         (middle, THUMB_RETURN_WAIT_MS),
         (thumb_slow, STAGE_DELAY_MS, thumb_done, True),
-        (index_full_grip, 0, thumb_done, True),
-    ])
+    ]
+    if thumb_probe_var.get():
+        stages += [
+            (index_only, STAGE_DELAY_MS, thumb_done, True),
+            (start_probe, 0, thumb_probe.index_settled, True),
+            (full_grip_after_probe, 0, thumb_probe.finished, True, THUMB_PROBE_MAX_S + 5),
+        ]
+    else:
+        stages += [(index_full_grip, 0, thumb_done, True)]
+    run_stages(stages)
+
+def wave_hi():
+    """Fingers wave one after the other and the hand ends fully open. Not while the hand holds or
+    closes on something: opening the fingers would drop it."""
+    if hand["state"] in ("CLOSING", "CONTACT", "HOLD", "PROBING"):
+        print(f"Wave hi ignored: the hand is {hand['state']} – press Open first.")
+        return
+    if motion_blocked():
+        return
+    cancel_pending_moves()
+    rot_guard.release()
+    write_shorts(ACT_SHORT_FIELDS["force_set"][0], [WAVE_FORCE] * 4 + [FORCE_LIMIT_THUMB_BEND,
+                                                                        FORCE_LIMIT_THUMB_ROT])
+    set_speeds(fingers=WAVE_SPEED)
+    set_hand_state("IDLE", "waving hi")
+    all_open = {i: 1000 for i in range(6)}
+    stages = [(all_open, WAVE_STEP_MS)]
+    order = [3, 2, 1, 0]                        # index, middle, ring, little
+    for cycle in range(WAVE_CYCLES):
+        bent = []
+        # each finger stays bent for two steps, so it gets ~half a stroke at WAVE_STEP_MS
+        for f in (order if cycle % 2 == 0 else order[::-1]):
+            stage = {f: WAVE_BEND}
+            if len(bent) == 2:
+                stage[bent.pop(0)] = 1000
+            bent.append(f)
+            stages.append((stage, WAVE_STEP_MS))
+        while bent:                             # end of the sweep: the last two straighten
+            stages.append(({bent.pop(0): 1000}, WAVE_STEP_MS))
+    stages.append((all_open, 0))
+    run_stages(stages)
 
 def clear_faults():
     # if the hand is still too hot it sets the over-temp flag again and the state returns to FAULTY
@@ -853,15 +933,14 @@ def clear_faults():
 # CONTACT    a finger or the palm touched something while closing
 # HOLD       closing finished (target reached or stopped on the object); stays until Open
 # RELEASING  Open sent; becomes OPENED once every DOF is open
-# FAULTY     an error register of a DOF is set (only the hand's flags, no software thresholds);
-#            with the over-temp flag every DOF also stops driving. All motion commands are
-#            refused; only Clear errors leaves it – faults are never cleared automatically.
+# FAULTY     no longer entered: every fault flag is cleared automatically and the move sent
+#            again (retry_fault), so nothing stops. Clear errors still clears them by hand.
 #            A move that takes longer than MOVE_TIMEOUT_S only shows a warning.
 # The transitions come from the hand's feedback (angles, error flags, tactile), not from
 # the button presses alone.
 HAND_STATE_COLORS = {"IDLE": "gray40", "OPENED": "#008800", "CLOSING": "#cc7700",
                      "CONTACT": "#0066cc", "HOLD": "#003399", "RELEASING": "#cc7700",
-                     "FAULTY": "red"}
+                     "PROBING": "#7a3db8", "FAULTY": "red"}
 
 hand = {
     "state": "IDLE", "since": time.time(), "reason": "",
@@ -870,7 +949,7 @@ hand = {
     "auto_armed": False,
     "auto_rec": False, "auto_rec_hold_t": None,         # Auto record: session it started, HOLD since
     "frozen": False,                                    # motor feedback currently frozen
-    "stall_retries": [],                                # times of automatic stall clears
+    "fault_retry_t": 0.0, "fault_text": "",             # last automatic fault clear, its faults
     "no_contact_since": None,                           # "No object" display in HOLD
 }
 
@@ -891,24 +970,21 @@ def find_fault(act):
             return f"{key}: {describe_errors(act['error'][i])}"
     return None
 
-def retry_stall(act, now):
-    """Only stall flags (ERROR bit 0) set: clear them and send the current targets again, up to
-    STALL_RETRIES times within STALL_RETRY_WINDOW_S. True if it did."""
-    if not all(e & ~1 == 0 for e in act["error"]):     # any other fault bit: FAULTY as before
-        return False
-    recent = [t for t in hand["stall_retries"] if now - t < STALL_RETRY_WINDOW_S]
-    if len(recent) >= STALL_RETRIES:
-        print(f"Stall again after {STALL_RETRIES} automatic clears within "
-              f"{STALL_RETRY_WINDOW_S:.0f} s – giving up.")
-        return False
-    hand["stall_retries"] = recent + [now]
-    stalled = ", ".join(k for k, e in zip(DOF_KEYS, act["error"]) if e)
-    print(f"Stall on {stalled}: clearing the fault and trying again "
-          f"({len(recent) + 1}/{STALL_RETRIES}).")
-    clear_errors()
+def retry_fault(act, now):
+    """Any fault flag: clear it and send the current targets again (at most every
+    FAULT_RETRY_INTERVAL_S), and carry on – nothing stops, the hand doesn't go FAULTY."""
+    if now - hand["fault_retry_t"] < FAULT_RETRY_INTERVAL_S:
+        return
+    hand["fault_retry_t"] = now
+    text = ", ".join(f"{k}: {describe_errors(e)}" for k, e in zip(DOF_KEYS, act["error"]) if e)
+    if text != hand["fault_text"]:              # print once per new set of faults
+        hand["fault_text"] = text
+        print(f"Fault ({text}): clearing it and carrying on – the move is sent again."
+              + (" Over-temperature can't be cleared: the hand holds that motor until it cools."
+                 if any(e & (1 << 1) for e in act["error"]) else ""))
+    clear_errors(quiet=True)
     write_angles()              # the move again (skipped while a finger grips too hard)
-    warn_hand_state(f"stall on {stalled} cleared, retried")
-    return True
+    warn_hand_state(f"fault cleared, carrying on ({text})")
 
 def hand_fully_open(act):
     return all(a >= lim for a, lim in zip(act["angle_act"], OPEN_ANGLES))
@@ -1005,7 +1081,7 @@ class RotationGuard:
             self.push_since = None
         elif abs(act["current"][5]) > ROT_STOP_CURRENT and self.push_since is None:
             self.push_since = now
-        if state in ("RELEASING", "FAULTY"):
+        if state in ("RELEASING", "FAULTY", "PROBING"):   # PROBING moves the thumb on purpose
             if self.reason:
                 print("Thumb rotation free again.")
             self.reason = ""
@@ -1119,11 +1195,223 @@ class SlipDetector:
 
 slip = SlipDetector()
 
+# ----------------------------
+# 👍 READ THUMB PRESS
+# ----------------------------
+# Stepped from the GUI loop while the hand is PROBING (Close with "Read Thumb Press" ticked).
+# Every step is one write of the 6 targets + 6 force limits; the hand's own bend force limit
+# (THUMB_PROBE_FORCE) stops each press, so there is no stop write. Nothing stops the probe: a write
+# waits at most ANSWER_WAIT_S for the hand to answer the previous one, goes out with fingers
+# loaded and on frozen motor data (points read on frozen data are marked "frozen").
+class ThumbProbe:
+    def __init__(self):
+        self.points = []        # results: {rot, bend, force, contact, group, cy, cx, pressure}
+        self.status = ""
+        self.active = False
+        self.skipped = False    # this Close didn't probe (thumb rotation not open)
+        self.final_rot = 1000
+
+    def index_settled(self):
+        """Ready check for the probe stage (called repeatedly): the index has stopped moving
+        after the Close sent it to 0."""
+        now = time.time()
+        with latest_lock:
+            act = latest["actuators"]
+        if act is None:
+            return False
+        self.index_hist = [(t, a) for t, a in getattr(self, "index_hist", [])
+                           if now - t <= SLIP_SETTLE_S] + [(now, act["angle_act"][3])]
+        angles = [a for _, a in self.index_hist]
+        return (now - self.index_hist[0][0] >= SLIP_SETTLE_S - 0.15
+                and max(angles) - min(angles) <= SLIP_SETTLE_TOL)
+
+    def skip_reason(self):
+        """Why this Close must not probe, or None: only with the thumb rotation open."""
+        with latest_lock:
+            act = latest["actuators"]
+        if act is None:
+            return "no motor data"
+        if act["angle_act"][5] <= THUMB_PROBE_ROT_OPEN:
+            return (f"thumb rotation at {act['angle_act'][5]}, not open "
+                    f"(needs more than {THUMB_PROBE_ROT_OPEN})")
+        return None
+
+    def skip(self, reason):
+        self.points = []
+        self.active = False
+        self.skipped = True
+        self.status = f"skipped – {reason}"
+        print(f"Read Thumb Press: {self.status}")
+
+    def start(self):
+        now = time.time()
+        with latest_lock:
+            act = latest["actuators"]
+        self.points = []
+        self.active = True
+        self.skipped = False
+        self.status = "starting"
+        self.t0 = now
+        self.final_rot = act["angle_act"][5] if act is not None else sliders[5].get()
+        # steps: (what, rot, bend); the rotation fully to 1000 first (bend stays), then the bend
+        # open, 5 x (move, press), pull back at the best rotation
+        self.plan = [("rotate", 1000, None), ("open", 1000, 1000)]
+        for rot in THUMB_PROBE_ROTS:
+            self.plan += [("move", rot, 1000), ("press", rot, 0)]
+        self.plan.append(("return", None, 1000))
+        self.step_i = -1
+        self.step_t = now
+        self.history = []       # (time, angles) since the current step began
+        self.next_step(now)
+
+    def finished(self):
+        return not self.active
+
+    def finish(self, status):
+        if self.active:
+            self.active = False
+            self.status = status
+            print(f"Read Thumb Press: {status}")
+
+    def next_step(self, now):
+        self.step_i += 1
+        self.step_t = now
+        self.history = []
+        self.written = False
+
+    def write_pose(self, rot, bend):
+        """Thumb targets with the probe's bend force limit; the fingers keep their targets and
+        CLOSE_FORCE_LIMIT (the full grip follows the probe)."""
+        sliders[4].set(bend)
+        sliders[5].set(rot)
+        limits = grasp_limits(CLOSE_FORCE_LIMIT)
+        limits[4] = THUMB_PROBE_FORCE
+        limits[5] = THUMB_PROBE_ROT_FORCE
+        return write_shorts(ACT_SHORT_FIELDS["angle_set"][0], [s.get() for s in sliders] + limits,
+                            force=True)
+
+    def settled(self, now, dofs):
+        """The given DOFs moved at most SLIP_SETTLE_TOL in the last SLIP_SETTLE_S."""
+        recent = [a for t, a in self.history if now - t <= SLIP_SETTLE_S]
+        if not self.history or now - self.history[0][0] < SLIP_SETTLE_S:
+            return False
+        return all(max(a[i] for a in recent) - min(a[i] for a in recent) <= SLIP_SETTLE_TOL
+                   for i in dofs)
+
+    def read_contact(self, act, tactile, rot):
+        best, total = None, 0
+        for g in THUMB_GROUPS:
+            m = tactile[g]
+            mask = m > THUMB_PROBE_THRESHOLD
+            n = int(mask.sum())
+            total += n
+            if n and (best is None or m[mask].sum() > best[1]):
+                rows, cols = np.nonzero(mask)
+                w = m[mask].astype(float)
+                best = (g, float(w.sum()), (rows * w).sum() / w.sum(), (cols * w).sum() / w.sum())
+        bend = act["angle_act"][4]
+        point = {"rot": rot, "bend": bend, "force": act["force_act"][4], "contact": "none",
+                 "group": None, "cy": None, "cx": None, "pressure": 0}
+        if total >= THUMB_PROBE_TAXELS:
+            point.update(contact="sensor", group=best[0], pressure=int(best[1]),
+                         cy=round(best[2], 1), cx=round(best[3], 1))
+        elif bend > THUMB_PROBE_END:
+            point["contact"] = "force only"
+        return point
+
+    def best_rot(self):
+        sensor = [p for p in self.points if p["contact"] == "sensor"]
+        if sensor:
+            return max(sensor, key=lambda p: p["pressure"])["rot"]
+        force = [p for p in self.points if p["contact"] == "force only"]
+        if force:
+            return max(force, key=lambda p: p["force"])["rot"]
+        return self.final_rot   # no contact anywhere: back to where the rotation was
+
+    def step(self):
+        """Called from the GUI loop (every GUI_RATE_MS)."""
+        if not self.active:
+            return
+        if hand["state"] != "PROBING":          # opened, moved by hand, FAULTY
+            self.finish("cancelled (hand left PROBING)")
+            return
+        now = time.time()
+        if now - self.t0 > THUMB_PROBE_MAX_S:
+            self.finish(f"stopped after {THUMB_PROBE_MAX_S:.0f} s")
+            return
+        with latest_lock:
+            act, tactile, t = latest["actuators"], latest["tactile"], latest["t"]
+            frozen = now - t > 0.5 or t - latest["act_changed_t"] > FREEZE_S
+            answered = latest["act_changed_t"] > last_write_t
+        if act is None:
+            return
+        what, rot, bend = self.plan[self.step_i]
+        if not self.written:
+            if not answered and now - last_write_t < ANSWER_WAIT_S:
+                return
+            if what == "rotate":                # first: rotation fully to 1000, the bend stays put
+                set_speeds(thumb_rot=THUMB_ROT_SLOW_SPEED, thumb_bend=THUMB_PROBE_SPEED, force=True)
+                bend = act["angle_act"][4]
+                self.status = "rotating the thumb fully to 1000"
+            elif what == "open":
+                self.status = "opening the thumb bend"
+            if what == "return":
+                rot = self.final_rot = self.best_rot()
+                self.status = f"pulling back at rotation {rot}"
+            elif what in ("move", "press"):
+                self.status = f"{'pressing' if what == 'press' else 'rotating to'} {rot}"
+            if not self.write_pose(rot, bend):    # connection problem: try again next tick
+                return
+            self.written = True
+            self.step_t = now
+            self.target_rot = rot
+            return
+        self.history.append((now, list(act["angle_act"])))
+        # a step is done once the thumb has stopped AND the rotation has arrived (at most
+        # THUMB_PROBE_MOVE_S): a thumb held back by the object must not count as there
+        arrived = abs(act["angle_act"][5] - self.target_rot) <= THUMB_PROBE_ROT_TOL
+        if now - self.step_t < THUMB_PROBE_MOVE_S and not (arrived and self.settled(now, (4, 5))):
+            return
+        if not arrived:
+            print(f"Read Thumb Press: rotation at {act['angle_act'][5]}, short of "
+                  f"{self.target_rot} after {THUMB_PROBE_MOVE_S:.0f} s – carrying on")
+        if what == "press":
+            point = self.read_contact(act, tactile, rot)
+            point["frozen"] = frozen            # read on frozen motor data: not trustworthy
+            self.points.append(point)
+            print(f"Read Thumb Press: rot {rot}: bend {point['bend']}, force {point['force']}, "
+                  f"{point['contact']}" + (f" on {point['group']} ({point['pressure']})"
+                                           if point["group"] else ""))
+        if self.step_i + 1 >= len(self.plan):
+            n = sum(p["contact"] != "none" for p in self.points)
+            self.finish(f"done – contact at {n}/{len(self.points)} rotations, "
+                        f"thumb back to {self.final_rot}")
+            return
+        self.next_step(now)
+
+    def text(self):
+        if not (self.active or self.points or self.status):
+            return ""
+        lines = [f"Thumb press: {self.status}"]
+        if self.points:
+            lines.append(f"{'rot':>4} {'bend':>5} {'force':>6}  contact")
+            for p in self.points:
+                where = f": {p['group']} r{p['cy']} c{p['cx']}, {p['pressure']}" if p["group"] else ""
+                lines.append(f"{p['rot']:>4} {p['bend']:>5} {p['force']:>6}  {p['contact']}{where}"
+                             + ("  [frozen data]" if p.get("frozen") else ""))
+        return "\n".join(lines)
+
+    def snapshot(self):
+        return {"active": self.active, "status": self.status, "points": list(self.points)}
+
+thumb_probe = ThumbProbe()
+
 
 def update_hand_state(act, tactile):
     """Called from the GUI loop with the latest fresh frames (None if stale)."""
     if act is not None:
         step_hand_state(act, tactile)
+    thumb_probe.step()
     update_auto_close(tactile)
     update_auto_record()
     update_hand_labels()
@@ -1160,15 +1448,11 @@ def step_hand_state(act, tactile):
     stopped = (not pending_moves and elapsed >= STILL_S
                and now - hand["still_since"] >= STILL_S)
 
-    fault = find_fault(act)
-    if fault and state != "FAULTY" and retry_stall(act, now):
-        return
-    if fault and state != "FAULTY":
-        if any(e & (1 << 1) for e in act["error"]):     # ERROR bit 1 = over-temperature
-            hold_position(act)                          # stop every DOF from driving
-            fault += " – stopped"
-        set_hand_state("FAULTY", fault)
-        return
+    # faults never stop the hand: cleared, the move sent again, and the state machine carries on
+    if find_fault(act):
+        retry_fault(act, now)
+    elif not any(act["error"]):
+        hand["fault_text"] = ""
 
     if state == "IDLE":
         if stopped and hand_fully_open(act):
@@ -1268,6 +1552,7 @@ def update_hand_labels():
     rot_label.config(text=f"⚠ Thumb rotation stopped: {rot_guard.reason}" if rot_guard.reason else "")
     slip_label.config(text=f"Slip: {slip.status}" if slip.status else "",
                       fg="red" if slip.reasons else "#006600")
+    probe_label.config(text=thumb_probe.text())
 
 def toggle_auto_hold():
     hand.update(clear_since=None, contact_since=None, auto_armed=False)
@@ -1322,64 +1607,6 @@ def load_positions():
         positions[name] = values
         create_button(name, values)
 
-# ----------------------------
-# VISUALISATION
-# ----------------------------
-# The heatmap rectangles are created once and only recoloured afterwards,
-# which keeps the GUI thread light so it doesn't slow down acquisition.
-cells = {}          # name -> 2D list of canvas item ids
-cell_colors = {}    # name -> 2D list of current colours
-contact_dots = {}   # name -> canvas item id of the contact marker
-
-def color_for(value):
-    v = value / 4000
-    if v < 0.2:
-        return "#00aa00"
-    elif v < 0.5:
-        return "#cccc00"
-    elif v < 0.8:
-        return "#ff8800"
-    return "#ff0000"
-
-def build_canvas():
-    canvas.create_image(350, 450, image=hand_img)
-    for name, addr, h, w, key, rel in sensor_groups:
-        x0 = offsets[key][0] + rel[0]
-        y0 = offsets[key][1] + rel[1]
-        cells[name] = [[
-            canvas.create_rectangle(
-                x0+j*pixel, y0+i*pixel,
-                x0+(j+1)*pixel, y0+(i+1)*pixel,
-                fill="#00aa00", width=0, stipple="gray25"
-            ) for j in range(w)] for i in range(h)]
-        cell_colors[name] = [["#00aa00"] * w for _ in range(h)]
-        contact_dots[name] = canvas.create_oval(0, 0, 0, 0, fill="blue", state="hidden")
-
-def draw(tactile):
-    for name, addr, h, w, key, rel in sensor_groups:
-        matrix = tactile[name]
-
-        # Heatmap
-        for i in range(h):
-            for j in range(w):
-                c = color_for(matrix[i, j])
-                if c != cell_colors[name][i][j]:
-                    canvas.itemconfig(cells[name][i][j], fill=c)
-                    cell_colors[name][i][j] = c
-
-        # ✅ ROBUST CONTACT
-        n, cy, cx, force = contact_info(matrix)
-        dot = contact_dots[name]
-        if cy is None:
-            canvas.itemconfig(dot, state="hidden")
-            continue
-
-        x0 = offsets[key][0] + rel[0] + int(cx)*pixel
-        y0 = offsets[key][1] + rel[1] + int(cy)*pixel
-        size = int(3 + force/200)  # smooth scaling
-        canvas.coords(dot, x0, y0, x0+size, y0+size)
-        canvas.itemconfig(dot, state="normal")
-
 def describe_errors(code):
     return ", ".join(n for bit, n in ERROR_BITS.items() if code & (1 << bit)) or f"0x{code:02x}"
 
@@ -1419,9 +1646,6 @@ def gui_loop():
         act = latest["actuators"]
         t = latest["t"]
         frozen_s = t - latest["act_changed_t"]
-
-    if tactile is not None:
-        draw(tactile)
 
     # don't act on a stale frame if acquisition has stalled, nor on frozen motor feedback
     # (it looks like "nothing moves", which would e.g. trigger HOLD or motors off on old angles)
@@ -1474,6 +1698,7 @@ tk.Button(bf,text="Open",command=open_hand).pack(side="left")
 tk.Button(bf,text="Close",command=close_hand).pack(side="left")
 tk.Button(bf,text="Step +",command=step_plus).pack(side="left")
 tk.Button(bf,text="Step -",command=step_minus).pack(side="left")
+tk.Button(bf,text="Wave hi",command=wave_hi).pack(side="left")
 
 # ----------------------------
 # 🩺 Hand status UI
@@ -1503,6 +1728,9 @@ slip_label = tk.Label(status_frame, text="", font=("TkDefaultFont", 11, "bold"),
                       wraplength=480)
 slip_label.pack(anchor="w")
 
+probe_label = tk.Label(status_frame, text="", font="TkFixedFont", justify="left", fg="#7a3db8")
+probe_label.pack(anchor="w")
+
 tk.Button(status_frame, text="Clear errors", command=clear_faults).pack(fill="x")
 
 status_label = tk.Label(status_frame, text="No actuator data", justify="left",
@@ -1521,6 +1749,11 @@ tk.Checkbutton(auto_hold_frame, text="Close hand when an object touches the palm
 
 auto_hold_label = tk.Label(auto_hold_frame, text="Off", justify="left")
 auto_hold_label.pack(anchor="w")
+
+thumb_probe_var = tk.BooleanVar(value=False)
+tk.Checkbutton(auto_hold_frame, text="Read Thumb Press: after the index closes, press with the thumb "
+               f"at rotation {', '.join(map(str, THUMB_PROBE_ROTS))}", variable=thumb_probe_var,
+               wraplength=300, justify="left").pack(anchor="w")
 
 # ----------------------------
 # 📈 Logging UI
@@ -1553,13 +1786,6 @@ saved_frame = tk.Frame(left_frame)
 saved_frame.pack(fill="both", expand=True)
 
 load_positions()
-
-# ----------------------------
-# Canvas
-# ----------------------------
-canvas=tk.Canvas(right_frame,width=700,height=900)
-canvas.pack()
-build_canvas()
 
 closing = False
 
