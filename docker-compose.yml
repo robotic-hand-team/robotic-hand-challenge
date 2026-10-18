@@ -1,0 +1,41 @@
+services:
+  emulator:
+    build: ./emulator
+    container_name: modbus-emulator
+    ports:
+      - "5020:5020"
+    networks:
+      - hand-network
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    container_name: robotics-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - MODBUS_HOST=emulator
+      - MODBUS_PORT=5020
+    depends_on:
+      - emulator
+    networks:
+      - hand-network
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        - VITE_API_URL=http://localhost:8000
+    container_name: robotics-frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - hand-network
+    restart: unless-stopped
+
+networks:
+  hand-network:
+    driver: bridge
