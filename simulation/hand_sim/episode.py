@@ -136,7 +136,7 @@ class HandoverEpisode:
         raw = self.world.tactile.step(self.world.d)
         summary = self.world.tactile.summary(raw)
         pos, _ = self.world.object_pose(self.obj_id)
-        palm_id = self.world.m.body("right_hand_root").id
+        palm_id = self.world.m.body(f"{C.HAND_SIDE}_hand_root").id
         proximity = float(np.linalg.norm(pos - self.world.d.xpos[palm_id]))
         return Observation(t=self.t, phase=self.phase, phase_t=self.world.d.time - self.phase_t0,
                            registers=self.world.hand.read(), tactile=summary, proximity=proximity)
