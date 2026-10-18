@@ -22,13 +22,25 @@ LIVE_UDP_PORT = int(os.environ.get("LIVE_UDP_PORT", "5005"))
 LIVE_HAND_SIDE = os.environ.get("LIVE_HAND_SIDE", "left")  # the right hand is out of service (pose/config.py)
 LIVE_CLASSIFIER_SUFFIX = os.environ.get("LIVE_CLASSIFIER_SUFFIX", "_combined")  # real + sim training data
 # Live sensor A/B model:
-#   "hold_mean"  final_model/sensor_classifier.pkl (XGBoost on the *average* of the grasp's hold phase,
-#                trained on 33 labelled real sessions, leave-one-out 81.8%): one estimate per grasp
+#   "left_hand"  final_model/left_hand_models.pkl (classifier/train_left_hand.py): random forests on the
+#                average of the grasp's hold phase, trained on the 58 labelled grasps of the live left hand
+#                (models/dataset_left). Leave-one-grasp-out on the 37 photo labels: sensor 76%, direction
+#                median error 7 deg. Also gives the direction the object points, which drives its pose.
+#   "hold_mean"  final_model/sensor_classifier.pkl (XGBoost, same hold average, 33 real sessions; 73% left-
+#                one-out on the same photo labels): sensor only, the object keeps its nominal pose
 #   "per_frame"  xgb_sensor<LIVE_CLASSIFIER_SUFFIX>, one vote per frame, majority over the grasp
-# If the hold_mean model can't be loaded, the live pipeline falls back to per_frame.
-LIVE_SENSOR_MODEL = os.environ.get("LIVE_SENSOR_MODEL", "hold_mean")
+# If the chosen model can't be loaded, the live pipeline falls back to the next one down.
+LIVE_SENSOR_MODEL = os.environ.get("LIVE_SENSOR_MODEL", "left_hand")
+LEFT_HAND_MODELS = REPO_ROOT / "final_model" / "left_hand_models.pkl"
 HOLD_MEAN_MODEL = REPO_ROOT / "final_model" / "sensor_classifier.pkl"
-HOLD_MEAN_MIN_FRAMES = 15      # final_model/match_session.py MIN_HOLD_FRAMES
+# Settled hold frames averaged before the grasp's one decision. The models were trained on whole hold windows
+# (median 87 frames); 30 (~0.8 s at the GUI's ~38 Hz) is closer to that than final_model's minimum of 15 and
+# in the live replay (backend/eval_live.py) decides as many grasps.
+HOLD_MEAN_MIN_FRAMES = 30
+# One decision per grasp: nothing is shown ("analysing") until HOLD_MEAN_MIN_FRAMES settled hold frames
+# are in, then that answer is fixed until the grasp ends (the hand opens, a new Close starts, or - for a
+# stream without a state field - contact has been gone for GRASP_END_S).
+GRASP_END_S = 1.0
 # With Read Thumb Press (GUI state PROBING) the hold_mean estimate is made at probing start from the
 # last PRE_PROBE_FRAMES readings before it (index closed and settled, thumb not moved yet: the pose
 # the model was trained on; after probing the thumb sits elsewhere), shown PROBE_ESTIMATE_DELAY_S
@@ -75,6 +87,25 @@ LIVE_GRASP_OFFSET = {
     "vegabar_29": {"mm": [0.0, 0.0, 0.0], "deg": [0.0, 0.0, 0.0]},
     "vegabar_38": {"mm": [0.0, 0.0, 0.0], "deg": [0.0, 0.0, 0.0]},
 }
+# Live object pose from the "left_hand" direction estimate (twin.pose_in_palm): the object is turned in the
+# palm plane so its yellow end (object +y: VEGABAR 29's connector, VEGABAR 38's head) points the estimated
+# way, with its grip point on the fist centre. Grip point (object frame, m): where the fingers hold it, from
+# the session photos: VEGABAR 29 around its middle, VEGABAR 38 on the shaft next to the head (shaft axis
+# at x = -14 mm, simulation pivot). The fist centre (right-hand model frame, mm: y across the fingers, z
+# up the palm) is where the photos show the object: across the middle of the four fingers (their bases
+# span y 74-132 mm) and just below the finger bases (z 136 mm), so the closing fingers wrap it.
+# fit_real_grasp's height (75 mm) put it under the curled fingers, low in front of the palm.
+LIVE_FIST_CENTER_MM = [float(v) for v in os.environ.get("LIVE_FIST_CENTER_MM", "103,118").split(",")]
+# Palm tactile sensor (8 rows x 14 columns) in the right-hand model frame, from the hand manual's diagram
+# (p.26): directly below the finger bases (z 136 mm), centred under the four fingers, about 60 x 34 mm,
+# i.e. ~4.3 mm taxel pitch. The object's axis is put through the centroid of the palm's pressure strip
+# (palm_axis.palm_point); along its axis the grip point stays as close to the fist centre as it can.
+PALM_SENSOR_CENTER_MM = (103.0, 113.0)
+PALM_SENSOR_PITCH_MM = 4.3
+# Nominal direction of each object's real-grasp pose (its grasp_quat): 29's connector towards the thumb
+# (0 deg), 38's head towards the little finger (180 deg).
+LIVE_GRIP_POINT = {"vegabar_29": [0.0, 0.0, 0.0], "vegabar_38": [-0.014, -0.045, 0.0]}
+LIVE_NOMINAL_DIRECTION_DEG = {"vegabar_29": 0.0, "vegabar_38": 180.0}
 # Twin fingers (and thumb bend) stop at the object's surface instead of passing into it: the real
 # fingers read 3-18 while holding, which the model draws as a closed fist through the object.
 LIVE_FINGER_CLAMP = os.environ.get("LIVE_FINGER_CLAMP", "1") != "0"

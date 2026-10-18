@@ -120,7 +120,7 @@ export default function App() {
     <div className="app">
       <header className="header">
         <div className="brand">
-          <img className="brand-logo" src="/logo_vega_bfl.png" alt="VEGA × Black Forest Labs" />
+          <img className="brand-logo" src="/logo_dashboard.png" alt="VEGA × Black Forest Inovation" />
           <div className="brand-title">Tactile Digital Twin</div>
         </div>
         <div className="header-spacer" />

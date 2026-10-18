@@ -11,6 +11,7 @@ import mujoco
 import numpy as np
 import trimesh
 from scipy.spatial import ConvexHull
+from scipy.spatial.transform import Rotation
 
 from . import config as C
 
@@ -51,6 +52,7 @@ class Twin:
         self.obj_hulls = {o: [g for g in range(m.ngeom) if m.geom_bodyid[g] == m.body(o).id
                               and m.geom_group[g] == 3] for o in self.objects}
         self._clamp_cache = {}
+        self._hull_verts = {}
         self._fromto = np.zeros(6)
         # fast inside test for clamp_to_object: points on each finger's drawn surface (geom frame,
         # at most PROBE_POINTS per geom) and each object hull's planes (object body frame)
@@ -193,6 +195,82 @@ class Twin:
                 if best is None or miss < best[0]:
                     best = (miss, pose)
         return best[1]
+
+    def pose_in_palm(self, obj, theta_deg, nominal_pose, nominal_theta_deg, grip, fist, gap=0.001):
+        """Object pose [x, y, z, qw, qx, qy, qz] with its yellow end (object +y) pointing theta_deg in the
+        palm plane (0 = towards the thumb, +y; 90 = towards the fingertips, +z): nominal_pose's orientation
+        (whose yellow end points nominal_theta_deg) turned about the palm normal (x), the object's grip
+        point (object frame, m) on the fist centre (y, z), and x so it rests `gap` off the drawn palm."""
+        w, qx, qy, qz = nominal_pose[3:]
+        R = (Rotation.from_euler("x", theta_deg - nominal_theta_deg, degrees=True)
+             * Rotation.from_quat([qx, qy, qz, w]))
+        y, z = np.asarray(fist, float) - R.apply(grip)[1:]
+        qx, qy, qz, w = R.as_quat()
+        quat = np.array([w, qx, qy, qz])
+        return np.array([self._rest_x(obj, y, z, quat, gap, nominal_pose[0]), y, z, *quat])
+
+    def _rest_x(self, obj, y, z, quat, gap, fallback_x):
+        """x at which obj (orientation quat, at y, z) rests `gap` off the drawn palm; fallback_x if no part
+        of it is over the palm."""
+        if obj not in self._hull_verts:  # hull vertices in the object's own frame, once
+            with self.lock:
+                self._set_qpos(np.full(6, 1000.0), obj, np.array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]))
+                self._hull_verts[obj] = np.vstack([
+                    self.m.mesh_vert[self.m.mesh_vertadr[self.m.geom_dataid[g]]:self.m.mesh_vertadr[self.m.geom_dataid[g]]
+                                     + self.m.mesh_vertnum[self.m.geom_dataid[g]]]
+                    @ self.d.geom_xmat[g].reshape(3, 3).T + self.d.geom_xpos[g] for g in self.obj_hulls[obj]])
+        w, qx, qy, qz = quat
+        verts = Rotation.from_quat([qx, qy, qz, w]).apply(self._hull_verts[obj]) + [0.0, y, z]
+        margin = np.min(verts[:, 0] - self._palm_front(verts[:, 1:]))
+        return gap - margin if np.isfinite(margin) else fallback_x
+
+    def fingers_wrapping(self, obj, pose, hold_angles, clamp=True):
+        """(number of the five digits whose drawn surface is inside obj at hold_angles, number still inside
+        after clamp_to_object opened them). Inside at the real hold angles means the real digit was stopped
+        by the object, i.e. it wraps it; still inside after the clamp means it cannot be drawn without
+        passing through the object."""
+        hold = np.asarray(hold_angles, float)
+        with self.lock:
+            self._set_qpos(hold, obj, pose)
+            wrapped = sum(self._finger_inside(i, obj) for i in range(5))
+            if not clamp:
+                return wrapped, wrapped
+            clamped = self.clamp_to_object(hold, obj, pose)
+            self._set_qpos(clamped, obj, pose)
+            return wrapped, sum(self._finger_inside(i, obj) for i in range(5))
+
+    def refine_pose(self, obj, pose, hold_angles, reach=0.035, gap=0.001):
+        """pose, shifted in the palm plane (y, z; x re-seated on the palm) by the least amount that makes it
+        drawable with the real hold. The fixed fist-centre placement can leave the object low on the palm or
+        off it with no finger touching it (the finger clamp only opens digits that are already inside), or
+        sitting on the thumb's base, where no finger angle gets the digit out of it.
+        Candidates are ranked by (digits inside the object even with the hand fully open - a placement no
+        angle can fix, digits wrapping it at hold_angles - more is better, shift); a coarse 10 mm grid,
+        then 5 mm and 2.5 mm around the best."""
+        quat = pose[3:]
+        open_hand = np.full(6, 1000.0)
+        cache = {}
+
+        def score(dy, dz):
+            key = (round(dy * 1e4), round(dz * 1e4))
+            if key not in cache:
+                y, z = pose[1] + dy, pose[2] + dz
+                p = np.array([self._rest_x(obj, y, z, quat, gap, pose[0]), y, z, *quat])
+                with self.lock:
+                    self._set_qpos(open_hand, obj, p)
+                    blocked = sum(self._finger_inside(i, obj) for i in range(5))
+                    self._set_qpos(np.asarray(hold_angles, float), obj, p)
+                    wrapped = sum(self._finger_inside(i, obj) for i in range(5))
+                cache[key] = (blocked, -wrapped, float(np.hypot(dy, dz)), p)
+            return cache[key]
+
+        n = int(round(reach / 0.010))
+        steps = np.arange(-n, n + 1) * 0.010
+        best = min(((dy, dz) for dy in steps for dz in steps), key=lambda c: score(*c)[:3])
+        for h in (0.005, 0.0025):
+            around = [(best[0] + a, best[1] + b) for a in (-h, 0, h) for b in (-h, 0, h)]
+            best = min(around, key=lambda c: score(*c)[:3])
+        return score(*best)[3]
 
     def export_glb(self, path):
         """Write every visual mesh as one node per body (body-local coordinates, metres)."""

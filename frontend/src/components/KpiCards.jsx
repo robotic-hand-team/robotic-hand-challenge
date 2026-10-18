@@ -88,7 +88,9 @@ function PositionCard({ kpi, live }) {
       </div>
       <span className="kpi-sub">
         {live
-          ? "Tactile estimate (physics model, about ±25 mm) · palm +x, fingers +z"
+          ? kpi?.orientation === "estimated"
+            ? "Placed in the fist along the estimated direction · palm +x, fingers +z"
+            : "Nominal grasp position · palm +x, fingers +z"
           : "Relative to the hand root · palm +x, fingers +z"}
       </span>
     </section>
@@ -107,8 +109,10 @@ function OrientationCard({ kpi }) {
         <span className="kpi-value">{fmt(kpi?.tilt_deg)}<span className="unit">° tilt</span></span>
       )}
       <span className="kpi-sub">
-        Long axis {a ? `[${a.map((v) => fmt(v, 2)).join(", ")}]` : "–"} ·{" "}
-        {nominal ? "default grasp, no live orientation estimate yet" : "vs. nominal grasp"}
+        {kpi?.direction_text
+          ? <>{kpi.direction_text[0].toUpperCase() + kpi.direction_text.slice(1)} · tilt from across the palm</>
+          : <>Long axis {a ? `[${a.map((v) => fmt(v, 2)).join(", ")}]` : "–"} ·{" "}
+            {nominal ? "default grasp, no live orientation estimate yet" : "vs. nominal grasp"}</>}
       </span>
     </section>
   );

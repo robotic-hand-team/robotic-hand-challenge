@@ -1,0 +1,73 @@
+session,sensor,label_source,end_side,tilt_deg,end_thumb,end_up,confidence,note
+20261017_200733,,none,,,,,,no photo; at a block boundary
+20261017_200803,,none,,,,,,no photo; at a block boundary
+20261017_200816,,none,,,,,,no photo; at a block boundary
+20261017_200832,,none,,,,,,no photo; at a block boundary
+20261017_200911,,none,,,,,,no photo; at a block boundary
+20261017_200953,A,photo,thumb,0,1.0,0.0,medium,
+20261017_201039,A,inferred,,,,,low,between two Sensor A sessions
+20261017_201117,A,photo,little,-20,-0.94,-0.342,high,diagonal
+20261017_201205,A,inferred,,,,,low,between two Sensor A sessions
+20261017_201237,A,inferred,,,,,low,between two Sensor A sessions
+20261017_201335,A,inferred,,,,,low,between two Sensor A sessions
+20261017_201355,A,inferred,,,,,low,between two Sensor A sessions
+20261017_201416,A,inferred,,,,,low,between two Sensor A sessions
+20261017_201508,A,photo,down,0,0.0,-1.0,high,
+20261017_201530,A,inferred,,,,,low,between two Sensor A sessions
+20261017_201555,A,photo,thumb,20,0.94,0.342,medium,
+20261017_201613,A,photo,little,0,-1.0,0.0,high,
+20261017_201639,A,photo,up,0,0.0,1.0,high,
+20261017_201659,A,photo,down,0,0.0,-1.0,high,
+20261017_201720,A,photo,thumb,45,0.707,0.707,high,diagonal ~45 deg
+20261017_201737,A,photo,little,-25,-0.906,-0.423,high,diagonal
+20261017_201754,A,inferred,,,,,low,between two Sensor A sessions
+20261017_201807,A,inferred,,,,,low,between two Sensor A sessions
+20261017_201822,A,inferred,,,,,low,between two Sensor A sessions
+20261017_201837,A,photo,little,0,-1.0,0.0,medium,
+20261017_201853,,none,,,,,,no photo; at a block boundary
+20261017_201951,,none,,,,,,no photo; at a block boundary
+20261017_202029,,none,,,,,,no photo; at a block boundary
+20261017_202049,B,photo,thumb,0,1.0,0.0,high,
+20261017_202104,B,photo,little,-15,-0.966,-0.259,high,
+20261017_202131,B,inferred,,,,,low,between two Sensor B sessions
+20261017_202148,B,inferred,,,,,low,between two Sensor B sessions
+20261017_202205,B,inferred,,,,,low,between two Sensor B sessions
+20261017_202218,B,photo,little,0,-1.0,0.0,medium,hand still holding it
+20261017_202228,B,photo,little,-10,-0.985,-0.174,high,
+20261017_202245,B,photo,little,-25,-0.906,-0.423,high,diagonal
+20261017_202300,B,photo,thumb,35,0.819,0.574,high,diagonal
+20261017_202311,B,photo,little,-10,-0.985,-0.174,high,
+20261017_202337,,none,,,,,,no photo; at a block boundary
+20261017_202352,,none,,,,,,no photo; at a block boundary
+20261017_202408,,none,,,,,,no photo; at a block boundary
+20261017_202434,,none,,,,,,no photo; at a block boundary
+20261017_202449,A,photo,up,0,0.0,1.0,medium,"photo from the side, blurry"
+20261017_202556,A,inferred,,,,,low,between two Sensor A sessions
+20261017_202702,A,photo,little,0,-1.0,0.0,high,
+20261017_202731,A,photo,little,0,-1.0,0.0,high,
+20261017_202803,A,inferred,,,,,low,between two Sensor A sessions
+20261017_202815,A,photo,little,-5,-0.996,-0.087,high,
+20261017_202849,A,photo,little,-25,-0.906,-0.423,high,diagonal
+20261017_202911,A,inferred,,,,,low,between two Sensor A sessions
+20261017_202925,A,inferred,,,,,low,sensor hidden in the photo; between two Sensor A sessions
+20261017_202946,A,inferred,,,,,low,sensor hidden in the photo; between two Sensor A sessions
+20261017_203006,A,photo,thumb,0,1.0,0.0,high,
+20261017_203019,A,inferred,,,,,low,sensor hidden in the photo; between two Sensor A sessions
+20261017_203034_error,,error,,,,,,session flagged error by the team
+20261017_203103,A,photo,thumb,0,1.0,0.0,high,
+20261017_203115,A,photo,little,0,-1.0,0.0,high,
+20261017_203135,B,photo,thumb,0,1.0,0.0,high,
+20261017_203149,B,photo,little,-20,-0.94,-0.342,high,
+20261017_203420,B,photo,little,-35,-0.819,-0.574,medium,diagonal; hand still near
+20261017_203433,B,photo,thumb,0,1.0,0.0,high,thumb not wrapped (points up)
+20261017_203541,B,inferred,,,,,low,between two Sensor B sessions
+20261017_203628,B,photo,little,-10,-0.985,-0.174,high,
+20261017_203654,B,photo,little,15,-0.966,0.259,high,head slightly up
+20261017_203709,A,photo,thumb,0,1.0,0.0,high,
+20261017_203720_errror,,error,,,,,,session flagged error by the team
+20261017_203754,A,inferred,,,,,low,sensor hidden in the photo; between two Sensor A sessions
+20261017_203810,A,photo,thumb,0,1.0,0.0,high,
+20261017_203830,B,photo,thumb,0,1.0,0.0,high,
+20261017_203846,B,photo,thumb,0,1.0,0.0,high,
+20261017_203906,A,photo,little,-10,-0.985,-0.174,medium,
+20261017_203926,A,photo,thumb,0,1.0,0.0,high,

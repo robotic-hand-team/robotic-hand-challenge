@@ -47,13 +47,13 @@ body {
   display: flex;
   align-items: center;
   gap: var(--s3);
-  height: 64px;
+  height: 96px;
   padding: 0 var(--s4);
   border-bottom: 1px solid var(--border);
   background: var(--surface);
 }
 .brand { display: flex; align-items: center; gap: var(--s2); }
-.brand-logo { height: 40px; width: auto; display: block; }
+.brand-logo { height: 80px; width: auto; display: block; }
 .brand-title { font-size: 20px; font-weight: 700; letter-spacing: 0.01em; }
 .header-spacer { flex: 1; }
 .header-controls { display: flex; align-items: center; gap: var(--s1); }
