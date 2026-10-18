@@ -82,6 +82,8 @@ class LivePipeline:
 
     def _reset_grasp(self):
         self.votes, self.probs = [], []
+        self.decision = None         # (estimate, p_sensor_b): the grasp's one decision, fixed once made
+        self.quiet_since = None      # stateless streams: when contact was last lost
         self.hold_sum, self.hold_n = None, 0   # hold_mean: running sum of the grasp's feature rows
         self.pre_rows = deque(maxlen=C.PRE_PROBE_FRAMES)   # last readings before probing
         self.probe_est = None        # {"p", "n", "t"}: estimate made at probing start
@@ -173,6 +175,7 @@ class LivePipeline:
             if state == "PROBING" and self.hold_clf and len(self.pre_rows) >= C.HOLD_MEAN_MIN_FRAMES:
                 p = self.hold_clf.p_sensor_b(np.mean(self.pre_rows, axis=0))
                 self.probe_est = {"p": p, "n": len(self.pre_rows), "t": now}
+                self.decision = None   # a probed grasp is decided by this estimate, not the hold mean
                 print(f"[live] probing started: P(sensor B) = {p:.3f} from the last "
                       f"{len(self.pre_rows)} readings, shown in {C.PROBE_ESTIMATE_DELAY_S:g} s")
             self.state, self.state_since = state, now
@@ -186,45 +189,61 @@ class LivePipeline:
 
         if state and state not in GRASP_STATES:
             self._reset_grasp()  # new grasp, new vote
+        elif not state:          # no state in the message: a grasp ends when contact has been gone a while
+            if contacts > C.MIN_CONTACTS_ACTIVE:
+                self.quiet_since = None
+            elif self.quiet_since is None:
+                self.quiet_since = now
+            elif now - self.quiet_since >= C.GRASP_END_S and self.decision:
+                self._reset_grasp()
 
-        estimate, p_b = None, None
+        # One decision per grasp. Until HOLD_MEAN_MIN_FRAMES settled hold frames are in nothing is
+        # shown ("analysing"); the answer made then is fixed until the grasp ends, not re-voted per frame.
+        estimate, p_b, progress = None, None, 0.0
         if self.hold_clf and self.probe_est:
             # probed grasp: the estimate from probing start, shown PROBE_ESTIMATE_DELAY_S later
-            if now - self.probe_est["t"] >= C.PROBE_ESTIMATE_DELAY_S:
-                p_b = self.probe_est["p"]
-                label = "B" if p_b >= 0.5 else "A"
-                estimate = {"label": label, "confidence": round(p_b if label == "B" else 1 - p_b, 3),
-                            "agreement": None, "n_votes": self.probe_est["n"]}
+            progress = min(1.0, (now - self.probe_est["t"]) / C.PROBE_ESTIMATE_DELAY_S)
+            if self.decision is None and progress >= 1.0:
+                p = self.probe_est["p"]
+                label = "B" if p >= 0.5 else "A"
+                self.decision = ({"label": label, "confidence": round(p if label == "B" else 1 - p, 3),
+                                  "agreement": None, "n_votes": self.probe_est["n"]}, p)
         elif self.hold_clf:
             # one estimate per grasp from the mean over its settled hold frames (as trained)
-            if active:
-                v = self.hold_clf.vector(row)
-                self.hold_sum = v if self.hold_sum is None else self.hold_sum + v
-                self.hold_n += 1
-            if self.hold_n >= C.HOLD_MEAN_MIN_FRAMES:
-                p_b = self.hold_clf.p_sensor_b(self.hold_sum / self.hold_n)
-                label = "B" if p_b >= 0.5 else "A"
-                estimate = {"label": label, "confidence": round(p_b if label == "B" else 1 - p_b, 3),
-                            "agreement": None, "n_votes": self.hold_n}
-            if not active:
-                p_b = None
+            if self.decision is None:
+                if active:
+                    v = self.hold_clf.vector(row)
+                    self.hold_sum = v if self.hold_sum is None else self.hold_sum + v
+                    self.hold_n += 1
+                progress = min(1.0, self.hold_n / C.HOLD_MEAN_MIN_FRAMES)
+                if self.hold_n >= C.HOLD_MEAN_MIN_FRAMES:
+                    p = self.hold_clf.p_sensor_b(self.hold_sum / self.hold_n)
+                    label = "B" if p >= 0.5 else "A"
+                    self.decision = ({"label": label, "confidence": round(p if label == "B" else 1 - p, 3),
+                                      "agreement": None, "n_votes": self.hold_n}, p)
         else:
-            p_b = self._classify(row) if active else None
-            if p_b is not None:
-                self.votes.append(p_b >= 0.5)
-                self.probs.append(p_b)
-
-        if not self.hold_clf and self.votes:
-            n_b = int(sum(self.votes))
-            label = "B" if n_b * 2 > len(self.votes) else "A"
-            conf = float(np.mean([q if label == "B" else 1 - q for q in self.probs]))
-            estimate = {"label": label, "confidence": round(conf, 3),
-                        "agreement": round(max(n_b, len(self.votes) - n_b) / len(self.votes), 3),
-                        "n_votes": len(self.votes)}
+            p_b = self._classify(row) if active else None   # per-frame value, for the confidence chart
+            if self.decision is None:
+                if p_b is not None:
+                    self.votes.append(p_b >= 0.5)
+                    self.probs.append(p_b)
+                progress = min(1.0, len(self.votes) / C.HOLD_MEAN_MIN_FRAMES)
+                if len(self.votes) >= C.HOLD_MEAN_MIN_FRAMES:
+                    n_b = int(sum(self.votes))
+                    label = "B" if n_b * 2 > len(self.votes) else "A"
+                    conf = float(np.mean([q if label == "B" else 1 - q for q in self.probs]))
+                    self.decision = ({"label": label, "confidence": round(conf, 3),
+                                      "agreement": round(max(n_b, len(self.votes) - n_b) / len(self.votes), 3),
+                                      "n_votes": len(self.votes)}, p_b)
+        if self.decision:
+            estimate, progress = self.decision[0], 1.0
+            if self.hold_clf and (self.probe_est or active):
+                p_b = self.decision[1]
 
         # a probed grasp's estimate is shown during probing too, as long as the object is held
         if self.probe_est and estimate and contacts > C.MIN_CONTACTS_ACTIVE:
             active = True
+        in_grasp = (state in GRASP_STATES) if state else contacts > C.MIN_CONTACTS_ACTIVE
         obj, obj_pose, pos_rel, axis = None, None, None, None
         if estimate and active:
             obj = LABEL_TO_OBJECT[estimate["label"]]
@@ -249,6 +268,8 @@ class LivePipeline:
             "frozen": bool(msg.get("frozen")),
             "kpi": {
                 "sensor": estimate, "p_sensor_b": None if p_b is None else round(p_b, 3),
+                "sensor_state": ("final" if estimate else "analysing" if in_grasp else "idle"),
+                "analysis_progress": round(progress, 3),
                 "pos_mm": None if pos_rel is None else np.round(pos_rel, 1).tolist(),
                 "axis": None if axis is None else np.round(axis, 3).tolist(),
                 "tilt_deg": None, "orientation": "nominal",

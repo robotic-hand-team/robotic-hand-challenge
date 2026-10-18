@@ -29,6 +29,10 @@ LIVE_CLASSIFIER_SUFFIX = os.environ.get("LIVE_CLASSIFIER_SUFFIX", "_combined")  
 LIVE_SENSOR_MODEL = os.environ.get("LIVE_SENSOR_MODEL", "hold_mean")
 HOLD_MEAN_MODEL = REPO_ROOT / "final_model" / "sensor_classifier.pkl"
 HOLD_MEAN_MIN_FRAMES = 15      # final_model/match_session.py MIN_HOLD_FRAMES
+# One decision per grasp: nothing is shown ("analysing") until HOLD_MEAN_MIN_FRAMES settled hold frames
+# are in, then that answer is fixed until the grasp ends (the hand opens, a new Close starts, or - for a
+# stream without a state field - contact has been gone for GRASP_END_S).
+GRASP_END_S = 1.0
 # With Read Thumb Press (GUI state PROBING) the hold_mean estimate is made at probing start from the
 # last PRE_PROBE_FRAMES readings before it (index closed and settled, thumb not moved yet: the pose
 # the model was trained on; after probing the thumb sits elsewhere), shown PROBE_ESTIMATE_DELAY_S

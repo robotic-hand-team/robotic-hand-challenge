@@ -82,21 +82,39 @@ def classifier() -> SensorClassifier | None:
         return None
 
 
-def _running_estimate(p_b: np.ndarray, active: np.ndarray) -> list[dict | None]:
-    """Session estimate as it would be known at each frame: majority over active frames so far."""
-    out, votes, probs = [], [], []
-    for p, a in zip(p_b, active):
-        if a:
-            votes.append(p >= 0.5)
-            probs.append(p)
-        if not votes:
-            out.append(None)
-            continue
-        n_b = int(sum(votes))
-        label = "B" if n_b * 2 > len(votes) else "A"
-        conf = float(np.mean([q if label == "B" else 1 - q for q in probs]))
-        out.append({"label": label, "confidence": round(conf, 3),
-                    "agreement": round(max(n_b, len(votes) - n_b) / len(votes), 3), "n_votes": len(votes)})
+def grasp_decision(probs: list[float]) -> dict:
+    """The one sensor decision of a grasp: the label of the mean P(Sensor B) over its settled hold frames."""
+    p = float(np.mean(probs))
+    label = "B" if p >= 0.5 else "A"
+    agree = float(np.mean([(q >= 0.5) == (label == "B") for q in probs]))
+    return {"label": label, "confidence": round(p if label == "B" else 1 - p, 3),
+            "agreement": round(agree, 3), "n_votes": len(probs)}
+
+
+def _decisions(p_b: np.ndarray, active: np.ndarray, phase: np.ndarray):
+    """Per frame (sensor estimate, state, progress) of a replayed grasp: one decision per grasp.
+
+    Nothing is shown ("analysing") until HOLD_MEAN_MIN_FRAMES settled hold frames (phase "hold", object
+    touched) have been seen; the decision made then is fixed for the rest of the grasp instead of being
+    re-voted every frame. A grasp whose hold ends sooner (the object dropped) is decided at the end of
+    its hold with the frames it has."""
+    need = C.HOLD_MEAN_MIN_FRAMES
+    settled = active & (phase == "hold")
+    hold_idx = np.flatnonzero(phase == "hold")
+    last_hold = int(hold_idx[-1]) if len(hold_idx) else -1
+    out, probs, decision = [], [], None
+    for i in range(len(p_b)):
+        if decision is None:
+            if settled[i]:
+                probs.append(float(p_b[i]))
+            if len(probs) >= need or (probs and i == last_hold):
+                decision = grasp_decision(probs)
+        if decision:
+            out.append((decision, "final", 1.0))
+        elif phase[i] in ("grasp", "hold"):
+            out.append((None, "analysing", round(min(1.0, len(probs) / need), 3)))
+        else:
+            out.append((None, "idle", 0.0))
     return out
 
 
@@ -117,7 +135,9 @@ def load_session(session_id: str, twin) -> dict:
 
     clf = classifier()
     p_b = clf.predict(df) if clf else None
-    estimates = _running_estimate(p_b, active) if clf else [None] * len(df)
+    decisions = (_decisions(p_b, active, df["phase"].to_numpy()) if clf
+                 else [(None, "idle", 0.0)] * len(df))
+    estimates = [d[0] for d in decisions]
 
     root = twin.root_pos()
     grasp_quat = SC.OBJECTS[obj]["grasp_quat"]
@@ -143,7 +163,7 @@ def load_session(session_id: str, twin) -> dict:
             "contacts": int(contacts[i]),
             "in_hand": bool(r.in_hand),
             "kpi": {
-                "sensor": estimates[i],
+                "sensor": estimates[i], "sensor_state": decisions[i][1], "analysis_progress": decisions[i][2],
                 "p_sensor_b": None if p_b is None else round(float(p_b[i]), 3),
                 "pos_mm": np.round((pos - root) * 1000, 1).tolist(),
                 "axis": np.round(axis, 3).tolist(),
