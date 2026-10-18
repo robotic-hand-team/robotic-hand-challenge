@@ -102,8 +102,12 @@ THUMB_PROBE_ROT_FORCE = 1000  # thumb rotation force_set while probing (FORCE_LI
                            # otherwise), so the rotation isn't held short of its target
 THUMB_PROBE_MAX_S = 45.0   # the whole probe at most this long, then the full grip follows anyway
 FORCE_LIMIT_THUMB_BEND = 1000  # force_set of thumb bending
-FORCE_LIMIT_THUMB_ROT = 100    # force_set of thumb rotation: low, so it stops softly on the object
-                               # (its force reading at rest has been ~50, but also ~440 – then it can't move)
+FORCE_LIMIT_THUMB_ROT = 100    # force_set of thumb rotation: this much ABOVE its force reading at rest,
+                               # so it stops softly on the object. The reading at rest is not 0: −213…+169 g
+                               # in the logs, different after every power-up. A fixed 100 g limit was below
+                               # it in 20261018_122023 (106 g) and _130338 (169 g): status 2 (force limit
+                               # reached) from the start, and the rotation never moved. See thumb_rot_limit().
+THUMB_ROT_REST_ALPHA = 0.1     # weight of each new at-rest reading in the running average
 OPEN_FORCE_LIMIT = 3000    # force_set while opening: releasing squeezes nothing (hand default)
 # "Wave hi" button: the fingers bend one after the other (index -> little, then back), then open
 WAVE_BEND = 300            # how far each finger bends (0 = closed, 1000 = open)
@@ -247,10 +251,9 @@ AUTO_CLOSE_THRESHOLD = 100   # taxel value above baseline that counts for auto c
                              # pad taxels, 20:23–20:24) closed the hand on nothing 4 times; at 100 none
                              # of those trigger and all 36 real objects still do (logs 20261017_20*)
 AUTO_RECORD_HOLD_S = 2.0     # Auto record: logging stops this long after the grip is finished
-                             # (HOLD, i.e. the index closed and nothing moves), then the hand opens
-AUTO_RECORD_FROZEN_S = 2.0   # ... or after the motor data has been frozen this long, and opens anyway
-                             # (a frozen hand carries the Open out once it recovers, or once the
-                             # object is taken out)
+                             # (HOLD, i.e. the index closed and nothing moves). The hand stays closed:
+                             # open it with the Open button.
+AUTO_RECORD_FROZEN_S = 2.0   # ... or after the motor data has been frozen this long
 
 # ----------------------------
 # MODBUS
@@ -520,6 +523,7 @@ def acquisition_loop():
                 latest["act_changed_t"] = act_changed_t
             logger.log(t, act, tactile)
             if t - act_changed_t <= FREEZE_S:      # no decisions on frozen motor data
+                update_thumb_rot_rest(act, hand["state"])
                 rot_guard.update(act, tactile, hand["state"])
             slip.update(act, tactile, hand["state"], hand["since"], t - act_changed_t <= FREEZE_S)
             broadcast(t, act, t - act_changed_t > FREEZE_S, tactile)
@@ -615,7 +619,7 @@ def update_log_label():
     if hand["auto_rec"]:
         t = hand["auto_rec_hold_t"]
         rate += ("\nAuto record: recording until the grip is finished" if t is None else
-                 f"\nAuto record: stops and opens in {max(0.0, AUTO_RECORD_HOLD_S - (time.time() - t)):.1f} s")
+                 f"\nAuto record: stops in {max(0.0, AUTO_RECORD_HOLD_S - (time.time() - t)):.1f} s")
     elif auto_record_var.get():
         rate += "\nAuto record: waiting for an object"
     if logger.active:
@@ -674,12 +678,28 @@ def clear_errors(quiet=False):
 
 def set_force_limit(value=None, force=False):
     """Fingers: value (without one: the Grip force slider). Thumb: FORCE_LIMIT_THUMB_BEND and
-    FORCE_LIMIT_THUMB_ROT."""
+    thumb_rot_limit()."""
     write_shorts(ACT_SHORT_FIELDS["force_set"][0], grasp_limits(value), force)
+
+thumb_rot_rest = {"force": None}   # thumb rotation force_act at rest (hand OPENED / IDLE, not moving)
+
+def update_thumb_rot_rest(act, state):
+    """Acquisition thread: averages the thumb rotation's force reading while it rests (hand open or
+    idle, rotation at its setpoint) – its zero offset, which thumb_rot_limit() adds to the limit."""
+    if state not in ("OPENED", "IDLE") or abs(act["angle_set"][5] - act["angle_act"][5]) > 20:
+        return
+    f, rest = act["force_act"][5], thumb_rot_rest["force"]
+    thumb_rot_rest["force"] = f if rest is None else rest + THUMB_ROT_REST_ALPHA * (f - rest)
+
+def thumb_rot_limit():
+    """force_set for the thumb rotation: FORCE_LIMIT_THUMB_ROT above its reading at rest (never
+    less than FORCE_LIMIT_THUMB_ROT), so a positive zero offset can't hold it at the start."""
+    rest = thumb_rot_rest["force"]
+    return FORCE_LIMIT_THUMB_ROT + max(0, int(round(rest or 0)))
 
 def grasp_limits(value=None):
     value = int(force_slider.get() if value is None else value)
-    return [value] * 4 + [FORCE_LIMIT_THUMB_BEND, FORCE_LIMIT_THUMB_ROT]
+    return [value] * 4 + [FORCE_LIMIT_THUMB_BEND, thumb_rot_limit()]
 
 def set_move_limits(targets):
     """Manual moves, per DOF: closing gets the grasp limit, opening OPEN_FORCE_LIMIT
@@ -899,7 +919,7 @@ def wave_hi():
     cancel_pending_moves()
     rot_guard.release()
     write_shorts(ACT_SHORT_FIELDS["force_set"][0], [WAVE_FORCE] * 4 + [FORCE_LIMIT_THUMB_BEND,
-                                                                        FORCE_LIMIT_THUMB_ROT])
+                                                                        thumb_rot_limit()])
     set_speeds(fingers=WAVE_SPEED)
     set_hand_state("IDLE", "waving hi")
     all_open = {i: 1000 for i in range(6)}
@@ -1512,9 +1532,9 @@ def update_auto_close(tactile):
 
 def update_auto_record():
     """A session Auto record started ends AUTO_RECORD_HOLD_S after the grip is finished (HOLD:
-    the index has closed and nothing moves), then the hand opens – also when the motor data has
-    been frozen for AUTO_RECORD_FROZEN_S. It also ends when the hand is opened or moved by hand
-    before that."""
+    the index has closed and nothing moves) – also when the motor data has been frozen for
+    AUTO_RECORD_FROZEN_S. The hand stays closed; it opens only with the Open button. The session
+    also ends when the hand is opened or moved by hand before that."""
     if not hand["auto_rec"]:
         return
     if not logger.active:                       # stopped with the button
@@ -1524,10 +1544,8 @@ def update_auto_record():
     with latest_lock:
         frozen_for = latest["t"] - latest["act_changed_t"]
     if frozen_for > AUTO_RECORD_FROZEN_S:
-        print(f"Auto record: motor data frozen for {frozen_for:.0f} s – logging stopped, opening "
-              "anyway. Fingers that stay closed let go once the object is taken out.")
+        print(f"Auto record: motor data frozen for {frozen_for:.0f} s – logging stopped.")
         stop_logging()
-        open_hand()
         return
     if state in ("RELEASING", "IDLE"):
         print("Auto record: hand opened / moved before the grip finished – logging stopped.")
@@ -1536,9 +1554,8 @@ def update_auto_record():
         if hand["auto_rec_hold_t"] is None:
             hand["auto_rec_hold_t"] = now
         elif now - hand["auto_rec_hold_t"] >= AUTO_RECORD_HOLD_S:
-            print(f"Auto record: grip held {AUTO_RECORD_HOLD_S:.0f} s – logging stopped, opening.")
+            print(f"Auto record: grip held {AUTO_RECORD_HOLD_S:.0f} s – logging stopped.")
             stop_logging()
-            open_hand()
 
 def update_hand_labels():
     state = hand["state"]
@@ -1774,7 +1791,7 @@ log_button_bg = log_button.cget("bg")
 
 auto_record_var = tk.BooleanVar(value=False)
 tk.Checkbutton(log_frame, text="Auto record: log from object detection until "
-               f"{AUTO_RECORD_HOLD_S:g} s after the grip, then open", variable=auto_record_var,
+               f"{AUTO_RECORD_HOLD_S:g} s after the grip", variable=auto_record_var,
                command=toggle_auto_hold,
                wraplength=300, justify="left").pack(anchor="w")
 

@@ -34,11 +34,23 @@ HOLD_MEAN_MIN_FRAMES = 15      # final_model/match_session.py MIN_HOLD_FRAMES
 # the model was trained on; after probing the thumb sits elsewhere), shown PROBE_ESTIMATE_DELAY_S
 # after probing started, and kept until the hand opens.
 PRE_PROBE_FRAMES = 20
-PROBE_ESTIMATE_DELAY_S = float(os.environ.get("PROBE_ESTIMATE_DELAY_S", "4.0"))
+PROBE_ESTIMATE_DELAY_S = float(os.environ.get("PROBE_ESTIMATE_DELAY_S", "10.0"))
 
 OBJECT_TO_LABEL ={"vegabar_29": "A", "vegabar_38": "B"}
 LABEL_NAMES = {"A": "Sensor A · VEGABAR 29", "B": "Sensor B · VEGABAR 38"}
+# Grip force: the hand's force_act has a zero offset per finger (about -150…+250 g with nothing
+# touching, different after every power-up). The backend averages force_act while the GUI reports
+# OPENED (exponential average, this weight per frame), subtracts it and clips at 0.
+FORCE_BASE_ALPHA = 0.05
 MIN_CONTACTS_ACTIVE = 20       # classifier/predict.py: frames with fewer contacts are pre/post grasp
+# The sensor model runs only while an object is in the hand: the fingers (little–index) and the
+# palm together carry at least OBJECT_MIN_SUM counts above baseline on more than OBJECT_MIN_CONTACTS
+# taxels. Thumb groups don't count. Measured on the 98 hardware/logs holds: empty closes (fist or
+# open hand: drift, fingers touching each other) reach 1.6–2.5k counts on 18–23 taxels, held
+# objects 7.7k+ on 35+. This gate passes 1% of empty-hold frames (total contacts > 20: 42%) and
+# 100% of object-hold frames.
+OBJECT_MIN_SUM = float(os.environ.get("OBJECT_MIN_SUM", "5000"))
+OBJECT_MIN_CONTACTS = int(os.environ.get("OBJECT_MIN_CONTACTS", "30"))
 # Live hand: predict only once the GUI has reported HOLD for this long. While closing (and right
 # after) the fingers still move and the tactile picture is not the final grasp yet.
 PREDICT_AFTER_HOLD_S = float(os.environ.get("PREDICT_AFTER_HOLD_S", "1.0"))

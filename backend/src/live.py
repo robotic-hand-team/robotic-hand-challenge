@@ -49,6 +49,7 @@ PATCHES = [("little_tip", 3, 3), ("little_nail", 12, 8), ("little_pad", 10, 8),
 class LivePipeline:
     def __init__(self, twin):
         self.twin = twin
+        self.force_base = None   # force_act with the hand OPENED: each finger's zero offset
         self.root = twin.root_pos()
         try:
             self.clf = SensorClassifier(C.LIVE_CLASSIFIER_SUFFIX)
@@ -160,8 +161,20 @@ class LivePipeline:
         state = msg.get("state", "")
         slip = msg.get("slip") or {}
         act = {"angle_act": angle_act, "force_act": force_act or [0] * 6}
+        force_g = None           # force_act minus the OPENED baseline, clipped at 0
+        if force_act:
+            f = np.array(force_act, float)
+            if state == "OPENED":
+                self.force_base = (f if self.force_base is None
+                                   else self.force_base + C.FORCE_BASE_ALPHA * (f - self.force_base))
+            base = self.force_base if self.force_base is not None else 0.0
+            force_g = np.clip(f - base, 0, None).round().astype(int).tolist()
         angles = np.array(angle_act, float)
         contacts = sum(s["contacts"] for s in tac.values())
+        # object in the hand: tactile load on the fingers / palm (C.OBJECT_MIN_SUM), not the thumb
+        hand_tac = [s for g, s in tac.items() if not g.startswith("thumb")]
+        in_hand = (sum(s["sum"] for s in hand_tac) >= C.OBJECT_MIN_SUM
+                   and sum(s["contacts"] for s in hand_tac) > C.OBJECT_MIN_CONTACTS)
         row = {f"angle_act_{d}": v for d, v in zip(DOF, act["angle_act"])}
         for g, s in tac.items():
             for stat in ("sum", "max", "contacts", "cy", "cx", "force"):
@@ -173,16 +186,18 @@ class LivePipeline:
             if state == "PROBING" and self.hold_clf and len(self.pre_rows) >= C.HOLD_MEAN_MIN_FRAMES:
                 p = self.hold_clf.p_sensor_b(np.mean(self.pre_rows, axis=0))
                 self.probe_est = {"p": p, "n": len(self.pre_rows), "t": now}
-                print(f"[live] probing started: P(sensor B) = {p:.3f} from the last "
-                      f"{len(self.pre_rows)} readings, shown in {C.PROBE_ESTIMATE_DELAY_S:g} s")
             self.state, self.state_since = state, now
-        if self.hold_clf and state in ("CLOSING", "CONTACT") and contacts > C.MIN_CONTACTS_ACTIVE:
-            self.pre_rows.append(self.hold_clf.vector(row))
+        if self.hold_clf and state in ("CLOSING", "CONTACT"):
+            # only the uninterrupted run of object readings right before probing starts
+            if in_hand:
+                self.pre_rows.append(self.hold_clf.vector(row))
+            else:
+                self.pre_rows.clear()
         # predict only on a settled grasp: HOLD for at least PREDICT_AFTER_HOLD_S. With the hand
         # open, a few loaded taxels (sensor drift, the palm resting on something) must not produce
         # an estimate, and while closing the tactile picture is not the final grasp yet.
         settled = not state or (state == "HOLD" and now - self.state_since >= C.PREDICT_AFTER_HOLD_S)
-        active = settled and contacts > C.MIN_CONTACTS_ACTIVE   # no state in the message: old behaviour
+        active = settled and in_hand   # no state in the message: every frame with an object
 
         if state and state not in GRASP_STATES:
             self._reset_grasp()  # new grasp, new vote
@@ -223,7 +238,7 @@ class LivePipeline:
                         "n_votes": len(self.votes)}
 
         # a probed grasp's estimate is shown during probing too, as long as the object is held
-        if self.probe_est and estimate and contacts > C.MIN_CONTACTS_ACTIVE:
+        if self.probe_est and estimate and in_hand:
             active = True
         obj, obj_pose, pos_rel, axis = None, None, None, None
         if estimate and active:
@@ -243,7 +258,7 @@ class LivePipeline:
                   if obj_pose is not None else self.twin.poses(angles))
         self.latest = {
             "live": True, "seq": msg.get("seq"), "t": msg.get("t"), "phase": state or "LIVE",
-            "object": obj, "bodies": bodies, "angles": angle_act, "force_g": force_act or None,
+            "object": obj, "bodies": bodies, "angles": angle_act, "force_g": force_g,
             "tactile": {g: s["sum"] for g, s in tac.items()}, "has_tactile": self.has_tactile,
             "contacts": int(contacts) if tac else None, "in_hand": bool(active),
             "frozen": bool(msg.get("frozen")),
@@ -252,7 +267,7 @@ class LivePipeline:
                 "pos_mm": None if pos_rel is None else np.round(pos_rel, 1).tolist(),
                 "axis": None if axis is None else np.round(axis, 3).tolist(),
                 "tilt_deg": None, "orientation": "nominal",
-                "grip_force_g": int(sum(force_act[:5])) if force_act else None,
+                "grip_force_g": int(sum(force_g[:5])) if force_g else None,
                 "speed_mm_s": None,
                 "slipping": bool(slip.get("slipping")), "slip_text": slip.get("status", ""),
             },
