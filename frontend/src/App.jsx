@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchSession, fetchSessions } from "./api.js";
+import Charts from "./components/Charts.jsx";
 import KpiCards from "./components/KpiCards.jsx";
+import TactileHeatmap from "./components/TactileHeatmap.jsx";
 import TwinView from "./components/TwinView.jsx";
 import useLive from "./useLive.js";
 
-const CHART_SLOTS = ["Tactile pressure over time", "Finger forces", "Classifier confidence", "Slip velocity"];
+const LIVE_WINDOW = 300;  // frames kept for the live charts
 
 function usePlayback(session) {
   const [index, setIndex] = useState(0);
@@ -95,6 +97,14 @@ export default function App() {
   const random = () => shown.length && setSessionId(shown[Math.floor(Math.random() * shown.length)].id);
 
   const isLive = mode === "live";
+  const [liveHistory, setLiveHistory] = useState([]);
+  const lastLive = useRef(null);
+  useEffect(() => {
+    if (!isLive || !live.frame || live.frame === lastLive.current) return;
+    lastLive.current = live.frame;
+    setLiveHistory((h) => [...h.slice(-(LIVE_WINDOW - 1)), live.frame]);
+  }, [isLive, live.frame]);
+  const chartFrames = isLive ? liveHistory : session?.frames ?? [];
   const frame = isLive ? live.frame : session?.frames[play.index];
   const twinSession = isLive
     ? { object: live.frame?.object ?? null, mirrored: (live.status?.hand_side ?? "left") === "left" }
@@ -110,7 +120,7 @@ export default function App() {
     <div className="app">
       <header className="header">
         <div className="brand">
-          <span className="brand-mark" aria-hidden="true" />
+          <img className="brand-logo" src="/logo_vega_bfl.png" alt="VEGA × Black Forest Labs" />
           <div>
             <div className="brand-title">Tactile Digital Twin</div>
             <div className="brand-sub">VEGA challenge · Inspire RH56DFTP · pose &amp; sensor estimation</div>
@@ -165,12 +175,11 @@ export default function App() {
         </section>
 
         <div className="charts">
-          {CHART_SLOTS.map((title) => (
-            <section key={title} className="card placeholder" aria-label={title}>
-              <span className="placeholder-title">{title}</span>
-              <div className="placeholder-body">Visualization placeholder</div>
-            </section>
-          ))}
+          <section className="card heat-card" aria-label="Tactile heat map">
+            <span className="placeholder-title">Tactile heat map</span>
+            <TactileHeatmap tactile={frame?.tactile} />
+          </section>
+          <Charts frames={chartFrames} cursor={play.index} live={isLive} />
         </div>
       </main>
     </div>

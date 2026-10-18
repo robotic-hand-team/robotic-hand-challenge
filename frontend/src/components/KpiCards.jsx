@@ -1,27 +1,28 @@
+import { useState } from "react";
 import { SENSOR_INFO } from "../api.js";
 
-const pct = (x) => `${Math.round(x * 100)}%`;
 const fmt = (x, d = 1) => (x == null ? "–" : Number(x).toFixed(d));
 
-function SensorCard({ estimate, truth, live, noTactile }) {
+function HeldObjectCard({ estimate }) {
   const info = estimate ? SENSOR_INFO[estimate.label] : null;
-  const correct = estimate && truth ? estimate.label === truth : null;
+  const [open, setOpen] = useState(false);
   return (
-    <section className="card kpi kpi-accent" aria-label="Estimated sensor">
-      <span className="kpi-label">Estimated sensor</span>
-      <span className="kpi-value">{info ? info.name : "–"}</span>
-      <span className="kpi-sub">
-        {info
-          ? `${info.model} · confidence ${pct(estimate.confidence)}${live ? ` · ${estimate.n_votes} frames` : ""}`
-          : noTactile ? "Needs tactile data in the hand GUI's broadcast"
-          : live ? "Waiting for a grasp" : "Waiting for contact frames"}
-      </span>
-      <div className="meter" aria-hidden="true"><span style={{ width: info ? pct(estimate.confidence) : 0 }} /></div>
-      {correct != null && (
-        <span className={`badge ${correct ? "badge-ok" : "badge-danger"}`}>
-          <span className="dot" />{correct ? "Matches sim ground truth" : `Ground truth: Sensor ${truth}`}
-        </span>
-      )}
+    <section className="card kpi held" aria-label="Held object">
+      <div className="held-img">
+        {info ? <img src={info.image} alt={info.model} /> : <span className="held-empty" aria-hidden="true" />}
+      </div>
+      <div className="held-text">
+        <span className="held-name">{info ? info.model : "No object"}</span>
+        {info && (
+          <span className="held-blurb">
+            {info.blurb}{" "}
+            <button type="button" className="read-more" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+              {open ? "Close" : "Read more"} <span aria-hidden="true">→</span>
+            </button>
+          </span>
+        )}
+      </div>
+      {info && open && <div className="held-more" role="note">{info.more}</div>}
     </section>
   );
 }
@@ -87,7 +88,7 @@ export default function KpiCards({ frame, session, live, noTactile }) {
   const kpi = frame?.kpi;
   return (
     <div className="kpis">
-      <SensorCard estimate={kpi?.sensor} truth={session?.truth} live={live} noTactile={noTactile} />
+      <HeldObjectCard estimate={kpi?.sensor} />
       <PositionCard kpi={kpi} live={live} />
       <OrientationCard kpi={kpi} />
       <GripCard kpi={kpi} contacts={frame?.contacts} phase={frame?.phase} />
