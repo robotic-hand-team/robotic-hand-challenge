@@ -1,41 +1,36 @@
+# Dashboard: backend (FastAPI + MuJoCo twin) and frontend (nginx), then open http://localhost:3000
+#   docker compose up --build
+#
+# Live hand: hardware/config.py sends its UDP frames to 127.0.0.1:5005, which the published port below
+# forwards into the backend container. Broadcasting to 255.255.255.255 does not reach the container
+# on Docker Desktop (macOS/Windows); send to this machine's address instead.
 services:
-  emulator:
-    build: ./emulator
-    container_name: modbus-emulator
-    ports:
-      - "5020:5020"
-    networks:
-      - hand-network
-    restart: unless-stopped
-
   backend:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     container_name: robotics-backend
     ports:
       - "8000:8000"
+      - "5005:5005/udp"
     environment:
-      - MODBUS_HOST=emulator
-      - MODBUS_PORT=5020
-    depends_on:
-      - emulator
-    networks:
-      - hand-network
+      DATASET_DIR: /app/models/${DATASET:-dataset_sim}
+      TWIN_HAND_SIDE: ${TWIN_HAND_SIDE:-right}
+      CLASSIFIER_SUFFIX: ${CLASSIFIER_SUFFIX:-_sim}
+      LIVE_HAND_SIDE: ${LIVE_HAND_SIDE:-left}
+      LIVE_CLASSIFIER_SUFFIX: ${LIVE_CLASSIFIER_SUFFIX:-_combined}
+    volumes:
+      - ./models:/app/models:ro
     restart: unless-stopped
 
   frontend:
-    build:
-      context: ./frontend
-      args:
-        - VITE_API_URL=http://localhost:8000
+    build: ./frontend
     container_name: robotics-frontend
     ports:
       - "3000:3000"
+    environment:
+      BACKEND_ADDR: backend:8000
     depends_on:
-      - backend
-    networks:
-      - hand-network
+      backend:
+        condition: service_healthy
     restart: unless-stopped
-
-networks:
-  hand-network:
-    driver: bridge

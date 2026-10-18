@@ -1,0 +1,6 @@
+# Everything for the team venv: python3.11 -m venv venv && venv/bin/pip install -r requirements.txt
+# The Docker images install only their own service's file.
+-r backend/requirements.txt
+-r simulation/requirements.txt
+-r classifier/requirements.txt
+-r hardware/requirements.txt

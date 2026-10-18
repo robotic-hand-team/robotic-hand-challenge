@@ -1,6 +1,15 @@
-mujoco>=3.3
-numpy
-trimesh
-coacd
-pillow
-scipy
+# MuJoCo hand simulation (simulation/hand_sim). Pinned to the versions in the team venv (Python 3.11).
+mujoco==3.16.0
+numpy==2.4.6
+scipy==1.17.1
+trimesh==5.1.1
+rtree==1.4.1            # trimesh.proximity, used by physics_audit.py
+coacd==1.0.14           # convex decomposition: hand_sim.assets, rebuild_hand_collision
+pillow==12.3.0          # viewer heat map (tactile_panel.py)
+pandas==3.0.6
+# Viewer classifier overlay (classifier_bridge.py) loads the pickled models in classifier/model.
+joblib==1.6.0
+scikit-learn==1.9.1
+xgboost==3.2.0
+# Optional: left_hand.py's test_left_hand() checks the mirrored hand against the URDF.
+# yourdfpy

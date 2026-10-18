@@ -1,0 +1,16 @@
+# Build context for backend/Dockerfile is the repo root; keep it to what the image copies.
+.git
+venv
+**/__pycache__
+**/*.pyc
+.DS_Store
+.env
+.env.*
+frontend
+models
+docs
+hardware
+simulation/simulation
+simulation/assets
+simulation/example
+classifier/*.py

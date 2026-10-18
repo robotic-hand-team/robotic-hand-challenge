@@ -1,0 +1,12 @@
+# Sensor / pose / slip models (classifier/). Pinned to the team venv; the .pkl files in model/ need
+# these exact scikit-learn and xgboost versions to load.
+numpy==2.4.6
+pandas==3.0.6
+scipy==1.17.1
+joblib==1.6.0
+scikit-learn==1.9.1
+xgboost==3.2.0
+# Optional, not in the team venv:
+#   matplotlib   visualize_*.py
+#   torch        cnn_orientation.py, cnn_train.py
+#   aeon         minirocket_*.py

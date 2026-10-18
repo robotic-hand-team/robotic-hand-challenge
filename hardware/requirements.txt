@@ -1,0 +1,8 @@
+# Real-hand tools (hardware/). tkinter ships with Python (on macOS use the python.org or Homebrew
+# python-tk build).
+pymodbus==3.16.1        # 3.x takes device_id=, not slave=
+numpy==2.4.6
+pandas==3.0.6
+pillow==12.3.0
+# Optional: plot_logs.py
+# matplotlib

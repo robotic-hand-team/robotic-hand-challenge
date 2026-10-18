@@ -1,11 +1,14 @@
-fastapi
-uvicorn[standard]
-mujoco>=3.16
-numpy
-scipy
-pandas
-trimesh
-fast_simplification
-joblib
-scikit-learn
-xgboost
+# Dashboard backend (FastAPI + the MuJoCo twin). Pinned to the versions in the team venv (Python 3.11).
+# scikit-learn and xgboost are pinned exactly because classifier/model/*.pkl are pickles: loading them
+# with another version can fail or warn.
+fastapi==0.143.3
+uvicorn[standard]==0.54.0
+mujoco==3.16.0
+numpy==2.4.6
+scipy==1.17.1
+pandas==3.0.6
+trimesh==5.1.1
+fast_simplification==0.2.0
+joblib==1.6.0
+scikit-learn==1.9.1
+xgboost==3.2.0
